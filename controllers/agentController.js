@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import { addToMemory, queryMemory } from "../memory/chromaClient.js";
 import { v4 as uuidv4 } from "uuid";
+import { runLangchainAgent } from "../tools/langchainAgent.js";
 
 export async function handleTaskRequest(req, res) {
   const { task } = req.body;
@@ -78,5 +79,18 @@ export async function handleFileUpload(req, res) {
   } catch (err) {
     console.error("File LLM Error:", err);
     res.status(500).json({ error: "LLM failed to analyze the file" });
+  }
+}
+
+export async function handleLangchainTask(req, res) {
+  const { task } = req.body;
+  if (!task) return res.status(400).json({ error: "No task provided" });
+
+  try {
+    const response = await runLangchainAgent(task);
+    res.json({ result: response });
+  } catch (err) {
+    console.error("LangChain Agent Error:", err);
+    res.status(500).json({ error: "Agent task failed" });
   }
 }

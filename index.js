@@ -6,6 +6,7 @@ import multer from "multer";
 import {
   handleTaskRequest,
   handleFileUpload,
+  handleLangchainTask
 } from "./controllers/agentController.js";
 
 dotenv.config();
@@ -18,6 +19,7 @@ const upload = multer({ dest: "uploads/" });
 // ROUTES
 app.post("/agent/task", handleTaskRequest);
 app.post("/agent/upload", upload.single("file"), handleFileUpload);
+app.post("/agent/langchain-task",handleLangchainTask);
 
 app.get("/test", (req, res) => {
   res.json({ message: "Server is running" });

@@ -27,6 +27,16 @@ services:
     depends_on:
       - chroma
 
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "ollama pull llama3 || true; ollama serve"]
+
   daios-agent:
     build: .
     container_name: daios-agent
@@ -36,8 +46,12 @@ services:
       - PORT=3000
       - COHERE_API_KEY=${COHERE_API_KEY}
       - CHROMA_BRIDGE_URL=http://chroma-service:8001
+      - SERPER_API_KEY=${SERPER_API_KEY}
+      - OLLAMA_URL=http://ollama:11434
     depends_on:
       - chroma-service
+      - ollama
 
 volumes:
   chroma_data:
+  ollama_data:
