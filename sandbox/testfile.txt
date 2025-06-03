@@ -1,1 +1,1 @@
-Hello from LangChain agent and 1+2!
+{"langchain": "LangChain is an open-source AI framework for natural language processing and generation. It provides a simple and intuitive API for building custom NLP models."}{"langchain": "LangChain is a powerful AI model that enables natural language processing and generation capabilities."}{"langchain": "LangChain is a powerful AI model that enables natural language processing and generation capabilities."}{"langchain": "LangChain is a powerful AI model that enables natural language processing and generation capabilities."}

@@ -6,6 +6,10 @@ import {
   readFileTool,
   writeFileTool,
   listFilesTool,
+  appendFileTool,
+  deleteFileTool,
+  copyFileTool,
+  moveFileTool,
 } from "./fileToolLangchain.js";
 
 const llm = new ChatOllama({
@@ -14,7 +18,7 @@ const llm = new ChatOllama({
   temperature: 0,
 });
 
-const tools = [serperTool, writeFileTool, readFileTool, listFilesTool];
+const tools = [serperTool, writeFileTool, readFileTool, listFilesTool,appendFileTool,deleteFileTool,copyFileTool,moveFileTool];
 
 // Enhanced debugging
 console.log("LANGCHAIN TOOLS DEBUG:");

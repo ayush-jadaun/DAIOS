@@ -66,6 +66,68 @@ export const listFilesTool = new DynamicTool({
   },
 });
 
+
+export const appendFileTool = new DynamicTool({
+  name: "appendFile",
+  description:
+    "Appends content to the end of a file in the sandbox directory. Input should be a JSON string with 'filePath' and 'contents' fields.",
+  func: async (inputJSON) => {
+    try {
+      const { filePath, contents } = JSON.parse(inputJSON);
+      const result = await fileTool.append(filePath, contents);
+      return result;
+    } catch (error) {
+      return `Error appending file: ${error.message}`;
+    }
+  },
+});
+
+export const deleteFileTool = new DynamicTool({
+  name: "deleteFile",
+  description:
+    "Deletes a file in the sandbox directory. Input should be a JSON string with a 'filePath' field.",
+  func: async (inputJSON) => {
+    try {
+      const { filePath } = JSON.parse(inputJSON);
+      const result = await fileTool.delete(filePath);
+      return result;
+    } catch (error) {
+      return `Error deleting file: ${error.message}`;
+    }
+  },
+});
+
+export const moveFileTool = new DynamicTool({
+  name: "moveFile",
+  description:
+    "Moves (renames) a file in the sandbox directory. Input should be a JSON string with 'srcPath' and 'destPath' fields.",
+  func: async (inputJSON) => {
+    try {
+      const { srcPath, destPath } = JSON.parse(inputJSON);
+      const result = await fileTool.move(srcPath, destPath);
+      return result;
+    } catch (error) {
+      return `Error moving file: ${error.message}`;
+    }
+  },
+});
+
+export const copyFileTool = new DynamicTool({
+  name: "copyFile",
+  description:
+    "Copies a file in the sandbox directory. Input should be a JSON string with 'srcPath' and 'destPath' fields.",
+  func: async (inputJSON) => {
+    try {
+      const { srcPath, destPath } = JSON.parse(inputJSON);
+      const result = await fileTool.copy(srcPath, destPath);
+      return result;
+    } catch (error) {
+      return `Error copying file: ${error.message}`;
+    }
+  },
+});
+  
+
 // Debug export to verify tools are created properly
 console.log("File tools created:");
 console.log("readFileTool:", { name: readFileTool.name });
