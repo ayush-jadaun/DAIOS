@@ -11,7 +11,7 @@ import {
   copyFileTool,
   moveFileTool,
 } from "./fileToolLangchain.js";
-import { solveComplexTask } from "./taskManager.js";
+import axios from "axios"; // <-- Use axios to call Python FastAPI LangGraph service
 
 // LLM instance
 const llm = new ChatOllama({
@@ -130,6 +130,21 @@ Task: ${task}
   return "simple";
 }
 
+// Call the Python FastAPI LangGraph Task Planner
+async function callPythonTaskPlanner(task) {
+  try {
+    // Adjust port/URL if your FastAPI service runs elsewhere
+    const resp = await axios.post("http://task-planner:8002/plan", { task });
+    return resp.data;
+  } catch (err) {
+    console.error(
+      "Error calling Python task planner:",
+      err?.response?.data || err.message
+    );
+    throw err;
+  }
+}
+
 // Main exported function
 export async function runLangchainAgent(userTask) {
   try {
@@ -138,10 +153,10 @@ export async function runLangchainAgent(userTask) {
     console.log("Task classified as:", complexity);
 
     if (complexity === "complex") {
-      // Use your subtask planner and solver
-      console.log("Using task planner and solver for complex task...");
-      const results = await solveComplexTask(userTask);
-      return { mode: "task_manager", results };
+      // Use the Python LangGraph task planner instead of old taskManager.js
+      console.log("Calling Python LangGraph task planner for complex task...");
+      const results = await callPythonTaskPlanner(userTask);
+      return { mode: "task_manager", ...results };
     } else {
       // Use the simple agent path
       console.log("Using simple agent for task...");

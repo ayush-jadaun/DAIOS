@@ -27,6 +27,19 @@ services:
     depends_on:
       - chroma
 
+  task-planner:
+    build:
+      context: ./taskPlanner
+      dockerfile: Dockerfile
+    container_name: task-planner
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OLLAMA_URL=http://ollama:11434
+    ports:
+      - "8002:8002"
+    depends_on:
+      - ollama
+
   ollama:
     image: ollama/ollama
     container_name: ollama
@@ -48,11 +61,13 @@ services:
       - CHROMA_BRIDGE_URL=http://chroma-service:8001
       - SERPER_API_KEY=${SERPER_API_KEY}
       - OLLAMA_URL=http://ollama:11434
+      - TASK_PLANNER_URL=http://task-planner:8002
     depends_on:
       - chroma-service
+      - task-planner
       - ollama
     volumes:
-      - /e/daios/sandbox:/app/sandbox  # <-- This is your bind mount
+      - /e/daios/sandbox:/app/sandbox
 
 volumes:
   chroma_data:
