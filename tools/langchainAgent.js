@@ -111,7 +111,7 @@ const agentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
-  maxIterations: 5,
+  maxIterations: 3,
   returnIntermediateSteps: true,
   handleParsingErrors: true,
 });
