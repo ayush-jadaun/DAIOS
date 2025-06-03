@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  chroma:
+    image: ghcr.io/chroma-core/chroma:latest
+    container_name: chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - PERSIST_DIRECTORY=/chroma/chroma
+    restart: unless-stopped
+
+  chroma-service:
+    build:
+      context: ./utils
+      dockerfile: Dockerfile
+    container_name: chroma-service
+    environment:
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "8001:8001"
+    volumes:
+      - chroma_data:/chroma/chroma
+    depends_on:
+      - chroma
+
+  daios-agent:
+    build: .
+    container_name: daios-agent
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - COHERE_API_KEY=${COHERE_API_KEY}
+      - CHROMA_BRIDGE_URL=http://chroma-service:8001
+    depends_on:
+      - chroma-service
+
+volumes:
+  chroma_data:

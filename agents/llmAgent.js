@@ -5,12 +5,12 @@ const cohere = new CohereClient({
 });
 
 export async function runLLMTask(task) {
-  const response = await cohere.generate({
+  const response = await cohere.chat({
     model: "command",
-    prompt: task,
+    message: task,
     max_tokens: 300,
     temperature: 0.75,
   });
 
-  return response.generations[0].text.trim();
+  return response.text.trim();
 }
