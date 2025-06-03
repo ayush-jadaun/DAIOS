@@ -10,17 +10,41 @@ export async function handleTaskRequest(req, res) {
 
   try {
     // Query vector DB for relevant memory using text directly
-    const results = await queryMemory("uploads", task, 3);
+    const memoryResponse = await queryMemory("uploads", task, 3);
+
+    // Chroma's bridge response: { documents, ids, metadatas }
+    // Each is an array of arrays (one per query)
+    const docs =
+      Array.isArray(memoryResponse.documents) &&
+      Array.isArray(memoryResponse.documents[0])
+        ? memoryResponse.documents[0]
+        : [];
+    const ids =
+      Array.isArray(memoryResponse.ids) && Array.isArray(memoryResponse.ids[0])
+        ? memoryResponse.ids[0]
+        : [];
+    const metas =
+      Array.isArray(memoryResponse.metadatas) &&
+      Array.isArray(memoryResponse.metadatas[0])
+        ? memoryResponse.metadatas[0]
+        : [];
 
     // Combine documents into context
-    const context = results.map((r) => `---\n${r.document}`).join("\n");
+    const context = docs.map((doc, i) => `---\n${doc}`).join("\n");
+
+    // For context_used, package as array of objects
+    const context_used = docs.map((doc, i) => ({
+      id: ids[i],
+      document: doc,
+      metadata: metas[i],
+    }));
 
     // Final prompt with memory
     const prompt = `You are an intelligent assistant. Use the following context to help answer the task.\n\n${context}\n\nTask: ${task}`;
 
     // Run the task
     const response = await runLLMTask(prompt);
-    res.json({ result: response, context_used: results });
+    res.json({ result: response, context_used });
   } catch (err) {
     console.error("LLM Task Error:", err);
     res.status(500).json({ error: "Task processing failed" });
