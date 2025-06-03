@@ -2,17 +2,60 @@ import { createReactAgent, AgentExecutor } from "langchain/agents";
 import { ChatOllama } from "@langchain/ollama";
 import { serperTool } from "./serperTool.js";
 import { PromptTemplate } from "@langchain/core/prompts";
+import {
+  readFileTool,
+  writeFileTool,
+  listFilesTool,
+} from "./fileToolLangchain.js";
 
 const llm = new ChatOllama({
   model: "llama3",
   baseUrl: process.env.OLLAMA_URL || "http://ollama:11434",
-  temperature: 0, 
+  temperature: 0,
 });
 
-const tools = [serperTool];
+const tools = [serperTool, writeFileTool, readFileTool, listFilesTool];
+
+// Enhanced debugging
+console.log("LANGCHAIN TOOLS DEBUG:");
+tools.forEach((tool, index) => {
+  console.log(`Tool ${index}:`, {
+    tool: tool,
+    name: tool?.name,
+    description: tool?.description?.substring(0, 50) + "...",
+    funcType: typeof tool?.func,
+    isValidTool: !!(tool && tool.name && tool.description && tool.func),
+  });
+});
+
+// Filter out invalid tools
+const validTools = tools.filter((tool) => {
+  const isValid =
+    tool &&
+    typeof tool.name === "string" &&
+    typeof tool.description === "string" &&
+    typeof tool.func === "function";
+
+  if (!isValid) {
+    console.error("INVALID TOOL DETECTED:", tool);
+  }
+  return isValid;
+});
+
+console.log(
+  `Using ${validTools.length} valid tools out of ${tools.length} total tools`
+);
+console.log(
+  "Valid tool names:",
+  validTools.map((t) => t.name)
+);
+
+if (validTools.length === 0) {
+  throw new Error("No valid tools available! Check your tool definitions.");
+}
 
 const prompt = new PromptTemplate({
-  template: `You are a helpful assistant that can search the web for current information. Answer the user's question as best you can using the available tools.
+  template: `You are a helpful assistant that can search the web and work with files. Answer the user's question as best you can using the available tools.
 
 You have access to the following tools:
 {tools}
@@ -32,6 +75,7 @@ IMPORTANT:
 - Only use each tool once per question unless you need different information
 - After getting search results, analyze them and provide a final answer
 - Do not repeat the same search multiple times
+- Always provide JSON input to tools in the correct format
 
 Begin!
 
@@ -42,22 +86,26 @@ Thought:{agent_scratchpad}`,
 
 const agent = await createReactAgent({
   llm,
-  tools,
+  tools: validTools,
   prompt,
 });
 
 const agentExecutor = new AgentExecutor({
   agent,
-  tools,
-  verbose: true, 
-  maxIterations: 5, 
-  returnIntermediateSteps: true, 
-  handleParsingErrors: true, 
+  tools: validTools,
+  verbose: true,
+  maxIterations: 5,
+  returnIntermediateSteps: true,
+  handleParsingErrors: true,
 });
 
 export async function runLangchainAgent(userTask) {
   try {
     console.log("Starting agent execution for task:", userTask);
+    console.log(
+      "Available tools:",
+      validTools.map((t) => t.name)
+    );
 
     const result = await agentExecutor.invoke({
       input: userTask,
@@ -67,7 +115,7 @@ export async function runLangchainAgent(userTask) {
     return result.output ?? result;
   } catch (error) {
     console.error("Agent execution failed:", error);
-
+    console.error("Error stack:", error.stack);
 
     if (error.message.includes("Agent stopped due to iteration limit")) {
       return "I was able to search for information but reached the maximum number of steps. Please try rephrasing your question or asking for more specific information.";

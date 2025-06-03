@@ -51,6 +51,8 @@ services:
     depends_on:
       - chroma-service
       - ollama
+    volumes:
+      - /e/daios/sandbox:/app/sandbox  # <-- This is your bind mount
 
 volumes:
   chroma_data:
