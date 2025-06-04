@@ -8,6 +8,7 @@ import {
   handleFileUpload,
   handleLangchainTask
 } from "./controllers/agentController.js";
+import { handleDebugTask } from "./controllers/debugAgentController.js";
 
 dotenv.config();
 
@@ -20,6 +21,7 @@ const upload = multer({ dest: "uploads/" });
 app.post("/agent/task", handleTaskRequest);
 app.post("/agent/upload", upload.single("file"), handleFileUpload);
 app.post("/agent/langchain-task",handleLangchainTask);
+app.post("/agent/debug",handleDebugTask);
 
 
 app.get("/test", (req, res) => {
