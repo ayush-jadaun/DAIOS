@@ -10,15 +10,16 @@ import { portCheckerTool } from "../tools/ops/portCheckerTool.js";
 import { logFetcherTool } from "../tools/ops/logFetcherTool.js";
 import axios from "axios";
 import { queryMemory } from "../memory/chromaClient.js";
+import MessageBus from "../utils/MessageBus.js";
 
-// LLM instance
+const bus = new MessageBus("ops");
+
 const llm = new ChatOllama({
   model: "llama3",
   baseUrl: process.env.OLLAMA_URL || "http://ollama:11434",
   temperature: 0,
 });
 
-// Tools setup and validation
 const tools = [
   processCheckerTool,
   diskSpaceTool,
@@ -28,17 +29,6 @@ const tools = [
   serviceHealthTool,
   cpuMemTool,
 ];
-
-console.log("OPS AGENT TOOLS DEBUG:");
-tools.forEach((tool, index) => {
-  console.log(`Tool ${index}:`, {
-    tool: tool,
-    name: tool?.name,
-    description: tool?.description?.substring(0, 50) + "...",
-    funcType: typeof tool?.func,
-    isValidTool: !!(tool && tool.name && tool.description && tool.func),
-  });
-});
 
 const validTools = tools.filter((tool) => {
   const isValid =
@@ -65,14 +55,10 @@ if (validTools.length === 0) {
   throw new Error("No valid tools available! Check your tool definitions.");
 }
 
-// Prompt definition (using the opsAgentPrompt)
-const prompt = opsAgentPrompt;
-
-// Create the agent and executor
 const agent = await createReactAgent({
   llm,
   tools: validTools,
-  prompt,
+  prompt: opsAgentPrompt,
 });
 
 export const opsAgentExecutor = new AgentExecutor({
@@ -84,7 +70,6 @@ export const opsAgentExecutor = new AgentExecutor({
   handleParsingErrors: true,
 });
 
-// LLM-based classifier: decides simple/complex
 async function classifyTaskLLM(task) {
   const prompt = `
 Is the following ops task SIMPLE (can be answered in a single step) or COMPLEX (requires multiple subtasks or a step-by-step plan)? 
@@ -98,10 +83,8 @@ Ops Task: ${task}
   return "simple";
 }
 
-// Call the Python FastAPI LangGraph Task Planner
 async function callPythonTaskPlanner(task) {
   try {
-    // Adjust port/URL if your FastAPI service runs elsewhere
     const resp = await axios.post("http://task-planner:8002/plan", { task });
     return resp.data;
   } catch (err) {
@@ -113,9 +96,8 @@ async function callPythonTaskPlanner(task) {
   }
 }
 
-export async function runOpsAgent(userTask) {
+export async function runOpsAgent(userTask, pubSubOptions = {}) {
   try {
-    // Always fetch context from Chroma (optionally use an "ops-uploads" collection for ops agent isolation)
     const memoryResponse = await queryMemory("ops-uploads", userTask, 3);
 
     const docs =
@@ -125,30 +107,103 @@ export async function runOpsAgent(userTask) {
         : [];
     const context = docs.map((doc) => `---\n${doc}`).join("\n");
 
-    // Combine context and task
     const enrichedTask = `Use the following relevant context to guide your ops/infrastructure response.\n\n${context}\n\nOps Task: ${userTask}`;
-
     console.log("Classifying ops task complexity for:", userTask);
     const complexity = await classifyTaskLLM(enrichedTask);
     console.log("Ops task classified as:", complexity);
 
+    let result, mode;
     if (complexity === "complex") {
-      // Use the Python LangGraph task planner for complex tasks
       console.log(
         "Calling Python LangGraph task planner for complex ops task..."
       );
-      const results = await callPythonTaskPlanner(enrichedTask);
-      return { mode: "task_manager", ...results };
+      result = await callPythonTaskPlanner(enrichedTask);
+      mode = "task_manager";
     } else {
-      // Use the simple agent path
       console.log("Using simple ops agent for task...");
-      const result = await opsAgentExecutor.invoke({
+      const agentResult = await opsAgentExecutor.invoke({
         input: enrichedTask,
       });
-      return { mode: "simple", result: result.output ?? result };
+      result = agentResult.output ?? agentResult;
+      mode = "simple";
     }
+
+    if (pubSubOptions.publishResult) {
+      await bus.publish(
+        pubSubOptions.publishChannel || "agent.ops",
+        "OPS_RESULT",
+        {
+          userTask,
+          mode,
+          result,
+          contextUsed: docs,
+        }
+      );
+    }
+
+    return { mode, result };
   } catch (error) {
     console.error("Ops agent execution failed:", error);
+    if (pubSubOptions.publishResult) {
+      await bus.publish(
+        pubSubOptions.publishChannel || "agent.ops",
+        "OPS_ERROR",
+        {
+          userTask,
+          error: error.message || error,
+        }
+      );
+    }
     throw error;
   }
+}
+
+// Listen for ops tasks via pubsub and auto-process
+export function subscribeToOpsTasks(opsAgentRunner = runOpsAgent) {
+  bus.subscribe("agent.ops.task", async (msg) => {
+    try {
+      console.log("[OpsAgent] Processing message:", msg);
+
+      // Defensive: accept both old and new formats during transition
+      const data = msg.data || msg;
+      if (!data || !data.userTask) {
+        console.error("[OpsAgent] Invalid message format:", msg);
+        return;
+      }
+
+      const { userTask, replyChannel } = data;
+      console.log("[OpsAgent] Received ops task:", userTask);
+      console.log("[OpsAgent] Reply channel:", replyChannel);
+
+      if (!replyChannel) {
+        console.error("[OpsAgent] No reply channel provided");
+        return;
+      }
+
+      // Use passed runner (for testing/mocking)
+      console.log("[OpsAgent] Running ops agent...");
+      const result = await opsAgentRunner(userTask);
+
+      console.log("[OpsAgent] Ops result:", result);
+      console.log("[OpsAgent] Publishing result to channel:", replyChannel);
+
+      await bus.publish(replyChannel, "OPS_RESULT", {
+        output: result.result,
+        mode: result.mode,
+      });
+
+      console.log("[OpsAgent] Successfully published result!");
+    } catch (err) {
+      console.error("[OpsAgent] Error in handler:", err);
+      if (msg?.data?.replyChannel) {
+        try {
+          await bus.publish(msg.data.replyChannel, "OPS_ERROR", {
+            error: err.message || "Unknown error occurred",
+          });
+        } catch (publishErr) {
+          console.error("[OpsAgent] Failed to publish error:", publishErr);
+        }
+      }
+    }
+  });
 }

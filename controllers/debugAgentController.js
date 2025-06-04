@@ -1,55 +1,37 @@
-import { debugAgentExecutor } from "../agents/debugAgent.js";
-import { queryMemory } from "../memory/chromaClient.js";
+import MessageBus from "../utils/MessageBus.js";
 
-/**
- * Handle a debug agent task request.
- * Expects: { errorLog: string }
- */
 export async function handleDebugTask(req, res) {
   const { errorLog } = req.body;
   if (!errorLog)
     return res.status(400).json({ error: "No error log provided" });
 
-  try {
-    // Query vector DB for relevant memory using the error log
-    const memoryResponse = await queryMemory("uploads", errorLog, 3);
+  const replyChannel = `api.debug.response.${Date.now()}.${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  let responded = false;
+  const bus = new MessageBus("api-debug");
 
-    const docs =
-      Array.isArray(memoryResponse.documents) &&
-      Array.isArray(memoryResponse.documents[0])
-        ? memoryResponse.documents[0]
-        : [];
-    const ids =
-      Array.isArray(memoryResponse.ids) && Array.isArray(memoryResponse.ids[0])
-        ? memoryResponse.ids[0]
-        : [];
-    const metas =
-      Array.isArray(memoryResponse.metadatas) &&
-      Array.isArray(memoryResponse.metadatas[0])
-        ? memoryResponse.metadatas[0]
-        : [];
+  // 1. Save a reference to the handler
+  const handler = (msg) => {
+    if (!responded) {
+      responded = true;
+      res.json(msg);
+      bus.unsubscribe(replyChannel, handler); // Use reference!
+    }
+  };
 
-    // Combine documents into context
-    const context = docs.map((doc) => `---\n${doc}`).join("\n");
+  await bus.subscribe(replyChannel, handler);
 
-    // For context_used, package as array of objects
-    const context_used = docs.map((doc, i) => ({
-      id: ids[i],
-      document: doc,
-      metadata: metas[i],
-    }));
+  await bus.publish("agent.debug.task", "DEBUG_TASK", {
+    userTask: errorLog,
+    replyChannel,
+  });
 
-    // Enrich the input to the debug agent with context
-    const enrichedLog = `Use the following relevant context to guide your debugging.\n\n${context}\n\nError Log: ${errorLog}`;
-
-    // Run the debug agent
-    const result = await debugAgentExecutor.invoke({
-      input: enrichedLog,
-    });
-
-    res.json({ result: result.output ?? result, context_used });
-  } catch (err) {
-    console.error("Debug Agent Error:", err);
-    res.status(500).json({ error: "Agent task failed" });
-  }
+  setTimeout(() => {
+    if (!responded) {
+      responded = true;
+      res.status(504).json({ error: "Debug agent timeout" });
+      bus.unsubscribe(replyChannel, handler); // Use reference!
+    }
+  }, 600000);
 }

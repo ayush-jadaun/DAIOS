@@ -1,6 +1,13 @@
 version: "3.8"
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   chroma:
     image: ghcr.io/chroma-core/chroma:latest
     container_name: chroma
@@ -50,9 +57,9 @@ services:
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c", "ollama pull llama3 || true; ollama serve"]
 
-  daios-agent:
+  api-server:
     build: .
-    container_name: daios-agent
+    container_name: daios-api-server
     ports:
       - "3000:3000"
     environment:
@@ -62,12 +69,60 @@ services:
       - SERPER_API_KEY=${SERPER_API_KEY}
       - OLLAMA_URL=http://ollama:11434
       - TASK_PLANNER_URL=http://task-planner:8002
+      - REDIS_URL=redis://redis:6379
     depends_on:
+      - redis
       - chroma-service
       - task-planner
       - ollama
     volumes:
       - /e/daios/sandbox:/app/sandbox
+    command: ["node", "index.js"]
+
+  debug-agent:
+    build: .
+    container_name: daios-debug-agent
+    environment:
+      - CHROMA_BRIDGE_URL=http://chroma-service:8001
+      - OLLAMA_URL=http://ollama:11434
+      - TASK_PLANNER_URL=http://task-planner:8002
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - chroma-service
+      - task-planner
+      - ollama
+    command: ["node", "agentsEntry/debugAgentEntry.js"]
+
+  dev-agent:
+    build: .
+    container_name: daios-dev-agent
+    environment:
+      - CHROMA_BRIDGE_URL=http://chroma-service:8001
+      - OLLAMA_URL=http://ollama:11434
+      - TASK_PLANNER_URL=http://task-planner:8002
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - chroma-service
+      - task-planner
+      - ollama
+    command: ["node", "agentsEntry/devAgentEntry.js"]
+
+  ops-agent:
+    build: .
+    container_name: daios-ops-agent
+    environment:
+      - CHROMA_BRIDGE_URL=http://chroma-service:8001
+      - OLLAMA_URL=http://ollama:11434
+      - TASK_PLANNER_URL=http://task-planner:8002
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+      - chroma-service
+      - task-planner
+      - ollama
+    command: ["node", "agentsEntry/opsAgentEntry.js"]
 
 volumes:
   chroma_data:

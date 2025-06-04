@@ -1,54 +1,49 @@
-import { runDevAgent } from "../agents/devAgent.js";
+import MessageBus from "../utils/MessageBus.js";
 import fs from "fs";
-import { addToMemory, queryMemory } from "../memory/chromaClient.js";
+import { addToMemory } from "../memory/chromaClient.js";
 import { v4 as uuidv4 } from "uuid";
 
 /**
- * Handle a dev agent task request.
+ * Handle a dev agent task request via MessageBus.
  * Expects: { task: string }
  */
 export async function handleDevAgentTask(req, res) {
   const { task } = req.body;
   if (!task) return res.status(400).json({ error: "No task provided" });
 
-  try {
-    // Query vector DB for relevant memory using the task
-    const memoryResponse = await queryMemory("uploads", task, 3);
+  const replyChannel = `api.dev.response.${Date.now()}.${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  let responded = false;
+  const bus = new MessageBus("api-dev");
 
-    const docs =
-      Array.isArray(memoryResponse.documents) &&
-      Array.isArray(memoryResponse.documents[0])
-        ? memoryResponse.documents[0]
-        : [];
-    const ids =
-      Array.isArray(memoryResponse.ids) && Array.isArray(memoryResponse.ids[0])
-        ? memoryResponse.ids[0]
-        : [];
-    const metas =
-      Array.isArray(memoryResponse.metadatas) &&
-      Array.isArray(memoryResponse.metadatas[0])
-        ? memoryResponse.metadatas[0]
-        : [];
+  // Use a named handler reference
+  const handler = (msg) => {
+    if (!responded) {
+      responded = true;
+      res.json(msg);
+      bus.unsubscribe(replyChannel, handler);
+    }
+  };
 
-    const context = docs.map((doc) => `---\n${doc}`).join("\n");
-    const context_used = docs.map((doc, i) => ({
-      id: ids[i],
-      document: doc,
-      metadata: metas[i],
-    }));
+  await bus.subscribe(replyChannel, handler);
 
-    // Pass the original user task (NOT the enriched context) to runDevAgent,
-    // because runDevAgent handles context enrichment itself.
-    const response = await runDevAgent(task);
-    res.json({ result: response, context_used });
-  } catch (err) {
-    console.error("Dev Agent Task Error:", err);
-    res.status(500).json({ error: "Dev agent task processing failed" });
-  }
+  await bus.publish("agent.dev.task", "DEV_TASK", {
+    userTask: task,
+    replyChannel,
+  });
+
+  setTimeout(() => {
+    if (!responded) {
+      responded = true;
+      res.status(504).json({ error: "Dev agent timeout" });
+      bus.unsubscribe(replyChannel, handler);
+    }
+  }, 25000);
 }
 
 /**
- * Handle file upload for the dev agent: stores file in memory and runs analysis.
+ * Handle file upload for the dev agent: stores file in memory and runs analysis via MessageBus.
  * Expects a multipart/form-data upload at req.file
  */
 export async function handleDevAgentFileUpload(req, res) {
@@ -57,24 +52,42 @@ export async function handleDevAgentFileUpload(req, res) {
 
   try {
     const fileContent = fs.readFileSync(file.path, "utf8");
-
-    // Store in Chroma memory
     await addToMemory("uploads", uuidv4(), fileContent, {
       filename: file.originalname,
       timestamp: new Date().toISOString(),
     });
-
-    // Prepare prompt for Dev Agent to analyze the code
     const devTask = `Analyze the following code for improvements, bugs, and suggestions:\n\n${fileContent}`;
 
-    // Run dev agent task (uses the file content as the task)
-    const response = await runDevAgent(devTask);
+    const replyChannel = `api.dev.response.${Date.now()}.${Math.random()
+      .toString(36)
+      .slice(2)}`;
+    let responded = false;
+    const bus = new MessageBus("api-dev");
 
-    // Delete uploaded file after processing
+    const handler = (msg) => {
+      if (!responded) {
+        responded = true;
+        res.json(msg);
+        bus.unsubscribe(replyChannel, handler);
+      }
+    };
+
+    await bus.subscribe(replyChannel, handler);
+
+    await bus.publish("agent.dev.task", "DEV_TASK", {
+      userTask: devTask,
+      replyChannel,
+    });
+
+    setTimeout(() => {
+      if (!responded) {
+        responded = true;
+        res.status(504).json({ error: "Dev agent timeout" });
+        bus.unsubscribe(replyChannel, handler);
+      }
+    }, 600000);
+
     fs.unlinkSync(file.path);
-
-    // Respond with dev agent answer
-    res.json({ result: response });
   } catch (err) {
     console.error("Dev Agent File Error:", err);
     res.status(500).json({ error: "Dev agent failed to analyze the file" });

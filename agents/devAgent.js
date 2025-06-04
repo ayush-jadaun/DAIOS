@@ -20,7 +20,6 @@ import { yamlParserTool } from "../tools/debug/yamlParserTool.js";
 import { logFileReaderTool } from "../tools/debug/logFileReaderTool.js";
 import { dependencyInspectorTool } from "../tools/debug/dependencyInspectorTool.js";
 import { envVarReaderTool } from "../tools/debug/envVarReaderTool.js";
-// Dev-specific tools:
 import { codeWriterTool } from "../tools/dev/codeWriterTool.js";
 import { docsGeneratorTool } from "../tools/dev/docsGeneratorTool.js";
 import { testGeneratorTool } from "../tools/dev/testGeneratorTool.js";
@@ -29,17 +28,18 @@ import { prIssueManagerTool } from "../tools/dev/prIssueManagerTool.js";
 import { ciConfigTool } from "../tools/dev/ciConfigTool.js";
 import axios from "axios";
 import { queryMemory } from "../memory/chromaClient.js";
+import MessageBus from "../utils/MessageBus.js";
 
-// LLM instance
+// Initialize the message bus for Dev Agent
+const bus = new MessageBus("dev");
+
 const llm = new ChatOllama({
   model: "llama3",
   baseUrl: process.env.OLLAMA_URL || "http://ollama:11434",
   temperature: 0,
 });
 
-// Tools setup and validation
 const tools = [
-  // Shared + debug tools
   serperTool,
   readFileTool,
   writeFileTool,
@@ -57,7 +57,6 @@ const tools = [
   logFileReaderTool,
   dependencyInspectorTool,
   envVarReaderTool,
-  // Dev agent specific tools
   codeWriterTool,
   docsGeneratorTool,
   testGeneratorTool,
@@ -91,7 +90,6 @@ if (validTools.length === 0) {
   throw new Error("No valid tools available! Check your tool definitions.");
 }
 
-// Create the agent and executor
 const agent = await createReactAgent({
   llm,
   tools: validTools,
@@ -107,7 +105,6 @@ export const devAgentExecutor = new AgentExecutor({
   handleParsingErrors: true,
 });
 
-// LLM-based classifier: decides simple/complex
 async function classifyTaskLLM(task) {
   const prompt = `
 Is the following dev task SIMPLE (can be answered in a single step) or COMPLEX (requires multiple subtasks or a step-by-step plan)? 
@@ -121,10 +118,8 @@ Dev Task: ${task}
   return "simple";
 }
 
-// Call the Python FastAPI LangGraph Task Planner
 async function callPythonTaskPlanner(task) {
   try {
-    // Adjust port/URL if your FastAPI service runs elsewhere
     const resp = await axios.post("http://task-planner:8002/plan", { task });
     return resp.data;
   } catch (err) {
@@ -136,9 +131,8 @@ async function callPythonTaskPlanner(task) {
   }
 }
 
-export async function runDevAgent(userTask) {
+export async function runDevAgent(userTask, pubSubOptions = {}) {
   try {
-    // Always fetch relevant context from Chroma memory (optional, but helpful)
     const memoryResponse = await queryMemory("uploads", userTask, 3);
 
     const docs =
@@ -148,29 +142,101 @@ export async function runDevAgent(userTask) {
         : [];
     const context = docs.map((doc) => `---\n${doc}`).join("\n");
 
-    // Combine context and task for better results
     const enrichedTask = `Use the following relevant context to guide your development work.\n\n${context}\n\nDev Task: ${userTask}`;
-
-    // Classify the task complexity
     const complexity = await classifyTaskLLM(enrichedTask);
 
+    let result, mode;
     if (complexity === "complex") {
-      // Use the Python LangGraph task planner for complex dev tasks
       console.log(
         "Calling Python LangGraph task planner for complex dev task..."
       );
-      const results = await callPythonTaskPlanner(enrichedTask);
-      return { mode: "task_manager", ...results };
+      result = await callPythonTaskPlanner(enrichedTask);
+      mode = "task_manager";
     } else {
-      // Use the dev agent directly for simple tasks
       console.log("Using dev agent for simple task...");
-      const result = await devAgentExecutor.invoke({
+      const agentResult = await devAgentExecutor.invoke({
         input: enrichedTask,
       });
-      return { mode: "simple", result: result.output ?? result };
+      result = agentResult.output ?? agentResult;
+      mode = "simple";
     }
+
+    if (pubSubOptions.publishResult) {
+      await bus.publish(
+        pubSubOptions.publishChannel || "agent.dev",
+        "DEV_RESULT",
+        {
+          userTask,
+          mode,
+          result,
+          contextUsed: docs,
+        }
+      );
+    }
+
+    return { mode, result };
   } catch (error) {
     console.error("Dev agent execution failed:", error);
+    if (pubSubOptions.publishResult) {
+      await bus.publish(
+        pubSubOptions.publishChannel || "agent.dev",
+        "DEV_ERROR",
+        {
+          userTask,
+          error: error.message || error,
+        }
+      );
+    }
     throw error;
   }
+}
+
+// Listen for dev tasks via pubsub and auto-process
+export function subscribeToDevTasks(devAgentRunner = runDevAgent) {
+  bus.subscribe("agent.dev.task", async (msg) => {
+    try {
+      console.log("[DevAgent] Processing message:", msg);
+
+      // Defensive: accept both old and new formats during transition
+      const data = msg.data || msg;
+      if (!data || !data.userTask) {
+        console.error("[DevAgent] Invalid message format:", msg);
+        return;
+      }
+
+      const { userTask, replyChannel } = data;
+      console.log("[DevAgent] Received dev task:", userTask);
+      console.log("[DevAgent] Reply channel:", replyChannel);
+
+      if (!replyChannel) {
+        console.error("[DevAgent] No reply channel provided");
+        return;
+      }
+
+      // Use passed runner (for testing/mocking)
+      console.log("[DevAgent] Running dev agent...");
+      const result = await devAgentRunner(userTask);
+
+      console.log("[DevAgent] Dev result:", result);
+      console.log("[DevAgent] Publishing result to channel:", replyChannel);
+
+      await bus.publish(replyChannel, "DEV_RESULT", {
+        output: result.result,
+        mode: result.mode,
+      });
+
+      console.log("[DevAgent] Successfully published result!");
+    } catch (err) {
+      console.error("[DevAgent] Error in handler:", err);
+      if (msg?.data?.replyChannel) {
+        try {
+          await bus.publish(msg.data.replyChannel, "DEV_ERROR", {
+            error: err.message || "Unknown error occurred",
+          });
+        } catch (publishErr) {
+          console.error("[DevAgent] Failed to publish error:", publishErr);
+        }
+      }
+    }
+  });
 }
