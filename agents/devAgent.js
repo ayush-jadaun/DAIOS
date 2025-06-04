@@ -1,6 +1,6 @@
 import { createReactAgent, AgentExecutor } from "langchain/agents";
 import { ChatOllama } from "@langchain/ollama";
-import { devAgentPrompt } from "../prompts/devAgentPrompt.js";
+import { devAgentPrompt } from "../prompts/devAgentPromt.js";
 import { serperTool } from "../tools/webSearch/serperTool.js";
 import {
   readFileTool,

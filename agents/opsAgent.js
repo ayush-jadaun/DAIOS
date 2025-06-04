@@ -1,6 +1,6 @@
 import { createReactAgent, AgentExecutor } from "langchain/agents";
 import { ChatOllama } from "@langchain/ollama";
-import { opsAgentPrompt } from "../prompts/opsAgentPrompt.js";
+import { opsAgentPrompt } from "../prompts/opsAgentPromt.js";
 import { processCheckerTool } from "../tools/ops/processCheckerTool.js";
 import { diskSpaceTool } from "../tools/ops/diskSpaceTool.js";
 import { dockerTool } from "../tools/ops/dockerTool.js";
@@ -75,7 +75,7 @@ const agent = await createReactAgent({
   prompt,
 });
 
-const agentExecutor = new AgentExecutor({
+export const opsAgentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
@@ -142,7 +142,7 @@ export async function runOpsAgent(userTask) {
     } else {
       // Use the simple agent path
       console.log("Using simple ops agent for task...");
-      const result = await agentExecutor.invoke({
+      const result = await opsAgentExecutor.invoke({
         input: enrichedTask,
       });
       return { mode: "simple", result: result.output ?? result };
