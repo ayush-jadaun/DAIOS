@@ -9,6 +9,7 @@ import {
   handleLangchainTask
 } from "./controllers/agentController.js";
 import { handleDebugTask } from "./controllers/debugAgentController.js";
+import { handleDevAgentTask } from "./controllers/devAgentController.js";
 
 dotenv.config();
 
@@ -22,6 +23,7 @@ app.post("/agent/task", handleTaskRequest);
 app.post("/agent/upload", upload.single("file"), handleFileUpload);
 app.post("/agent/langchain-task",handleLangchainTask);
 app.post("/agent/debug",handleDebugTask);
+app.post("/agent/dev",handleDevAgentTask);
 
 
 app.get("/test", (req, res) => {
