@@ -11,8 +11,10 @@ import {
   copyFileTool,
   moveFileTool,
 } from "../tools/filetools/fileToolLangchain.js";
+import { jsonParserTool } from "../tools/jsonParser/jsonParser.js";
 import axios from "axios"; 
 import { queryMemory,addToMemory } from "../memory/chromaClient.js";
+import { json } from "zod/v4";
 
 // LLM instance
 const llm = new ChatOllama({
@@ -31,6 +33,7 @@ const tools = [
   deleteFileTool,
   copyFileTool,
   moveFileTool,
+  jsonParserTool,
 ];
 
 console.log("LANGCHAIN TOOLS DEBUG:");
@@ -92,6 +95,8 @@ IMPORTANT:
 - After getting search results, analyze them and provide a final answer
 - Do not repeat the same search multiple times
 - Always provide JSON input to tools in the correct format
+- If you encounter a situation where you receive a JSON string from a tool or as context, and you need to extract or operate on its contents, use the "json_parser" tool to parse the string into JSON before proceeding.
+- If asked to write a file or a thought and the file doesn't exist yet, create the file using the available tools, then write the answer using the appropriate tool.
 **- If you already know the answer, do not use any tools, just provide the Final Answer immediately.**
 
 Begin!
@@ -112,7 +117,7 @@ const agentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
-  maxIterations: 3,
+  maxIterations: 5,
   returnIntermediateSteps: true,
   handleParsingErrors: true,
 });

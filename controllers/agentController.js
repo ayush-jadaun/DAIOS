@@ -3,7 +3,7 @@ import fs from "fs";
 import path from "path";
 import { addToMemory, queryMemory } from "../memory/chromaClient.js";
 import { v4 as uuidv4 } from "uuid";
-import { runLangchainAgent } from "../tools/langchainAgent.js";
+import { runLangchainAgent } from "../agents/langchainAgent.js";
 
 export async function handleTaskRequest(req, res) {
   const { task } = req.body;
