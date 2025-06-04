@@ -27,7 +27,6 @@ import { projectScaffoldTool } from "../tools/dev/projectScaffoldTool.js";
 import { prIssueManagerTool } from "../tools/dev/prIssueManagerTool.js";
 import { ciConfigTool } from "../tools/dev/ciConfigTool.js";
 import axios from "axios";
-import { queryMemory } from "../memory/chromaClient.js";
 import MessageBus from "../utils/MessageBus.js";
 
 // Initialize the message bus for Dev Agent
@@ -74,6 +73,11 @@ const validTools = tools.filter((tool) => {
 
   if (!isValid) {
     console.error("INVALID TOOL DETECTED:", tool);
+    console.error("Tool structure:", {
+      name: tool?.name,
+      description: tool?.description,
+      func: typeof tool?.func,
+    });
   }
   return isValid;
 });
@@ -90,6 +94,12 @@ if (validTools.length === 0) {
   throw new Error("No valid tools available! Check your tool definitions.");
 }
 
+
+
+// Wrap all your tools
+
+
+
 const agent = await createReactAgent({
   llm,
   tools: validTools,
@@ -100,7 +110,7 @@ export const devAgentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
-  maxIterations: 7,
+  maxIterations: 10, // Increased from 7
   returnIntermediateSteps: true,
   handleParsingErrors: true,
 });
@@ -133,25 +143,39 @@ async function callPythonTaskPlanner(task) {
 
 export async function runDevAgent(userTask, pubSubOptions = {}) {
   try {
-    const memoryResponse = await queryMemory("uploads", userTask, 3);
+    console.log("Starting dev agent with task:", userTask);
 
-    const docs =
-      Array.isArray(memoryResponse.documents) &&
-      Array.isArray(memoryResponse.documents[0])
-        ? memoryResponse.documents[0]
-        : [];
-    const context = docs.map((doc) => `---\n${doc}`).join("\n");
+    // Removed: Chroma context fetching
 
-    const enrichedTask = `Use the following relevant context to guide your development work.\n\n${context}\n\nDev Task: ${userTask}`;
+    const enrichedTask = userTask; // No extra context
+
     const complexity = await classifyTaskLLM(enrichedTask);
+    console.log("Task complexity:", complexity);
 
     let result, mode;
     if (complexity === "complex") {
-      console.log(
-        "Calling Python LangGraph task planner for complex dev task..."
-      );
-      result = await callPythonTaskPlanner(enrichedTask);
-      mode = "task_manager";
+      console.log("Getting subtasks from Python task planner...");
+      const planResult = await callPythonTaskPlanner(enrichedTask);
+
+      // Execute each subtask
+      const subtaskResults = [];
+      for (const subtask of planResult.subtasks) {
+        console.log(`Executing subtask: ${subtask}`);
+        const subtaskResult = await devAgentExecutor.invoke({
+          input: `Subtask: ${subtask}`,
+        });
+        subtaskResults.push({
+          subtask,
+          result: subtaskResult.output,
+        });
+      }
+
+      result = {
+        originalTask: userTask,
+        subtasks: planResult.subtasks,
+        results: subtaskResults,
+      };
+      mode = "complex_executed";
     } else {
       console.log("Using dev agent for simple task...");
       const agentResult = await devAgentExecutor.invoke({
@@ -169,7 +193,7 @@ export async function runDevAgent(userTask, pubSubOptions = {}) {
           userTask,
           mode,
           result,
-          contextUsed: docs,
+          contextUsed: [], // No context used
         }
       );
     }

@@ -144,13 +144,30 @@ export async function runDebugAgent(userTask, pubSubOptions = {}) {
     const complexity = await classifyTaskLLM(enrichedTask);
 
     let result, mode;
+    // In debugAgent.js
     if (complexity === "complex") {
-      // Use the Python LangGraph task planner for complex debug tasks
-      console.log(
-        "Calling Python LangGraph task planner for complex debug task..."
-      );
-      result = await callPythonTaskPlanner(enrichedTask);
-      mode = "task_manager";
+      console.log("Getting subtasks from Python task planner...");
+      const planResult = await callPythonTaskPlanner(enrichedTask);
+
+      // Execute each subtask
+      const subtaskResults = [];
+      for (const subtask of planResult.subtasks) {
+        console.log(`Executing subtask: ${subtask}`);
+        const subtaskResult = await debugAgentExecutor.invoke({
+          input: `${context}\n\nSubtask: ${subtask}`,
+        });
+        subtaskResults.push({
+          subtask,
+          result: subtaskResult.output,
+        });
+      }
+
+      result = {
+        originalTask: userTask,
+        subtasks: planResult.subtasks,
+        results: subtaskResults,
+      };
+      mode = "complex_executed";
     } else {
       // Use the debug agent directly for simple tasks
       console.log("Using debug agent for simple task...");

@@ -50,12 +50,23 @@ services:
   ollama:
     image: ollama/ollama
     container_name: ollama
+    runtime: nvidia # <-- Add this line for GPU support
+    deploy:         # <-- Add device reservations for Compose v3+
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c", "ollama pull llama3 || true; ollama serve"]
+    environment:
+      - OLLAMA_NUM_GPU=1     # <-- Optional: tell Ollama to use GPU if multiple present
+      - NVIDIA_VISIBLE_DEVICES=all # <-- Optional, but helps explicit device use
 
   api-server:
     build: .
@@ -86,12 +97,15 @@ services:
       - CHROMA_BRIDGE_URL=http://chroma-service:8001
       - OLLAMA_URL=http://ollama:11434
       - TASK_PLANNER_URL=http://task-planner:8002
+      - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
     depends_on:
       - redis
       - chroma-service
       - task-planner
       - ollama
+    volumes:
+      - /e/daios/sandbox:/app/sandbox
     command: ["node", "agentsEntry/debugAgentEntry.js"]
 
   dev-agent:
@@ -100,6 +114,7 @@ services:
     environment:
       - CHROMA_BRIDGE_URL=http://chroma-service:8001
       - OLLAMA_URL=http://ollama:11434
+      - SERPER_API_KEY=${SERPER_API_KEY}
       - TASK_PLANNER_URL=http://task-planner:8002
       - REDIS_URL=redis://redis:6379
     depends_on:
@@ -107,6 +122,8 @@ services:
       - chroma-service
       - task-planner
       - ollama
+    volumes:
+      - /e/daios/sandbox:/app/sandbox
     command: ["node", "agentsEntry/devAgentEntry.js"]
 
   ops-agent:
@@ -116,12 +133,15 @@ services:
       - CHROMA_BRIDGE_URL=http://chroma-service:8001
       - OLLAMA_URL=http://ollama:11434
       - TASK_PLANNER_URL=http://task-planner:8002
+      - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
     depends_on:
       - redis
       - chroma-service
       - task-planner
       - ollama
+    volumes:
+      - /e/daios/sandbox:/app/sandbox
     command: ["node", "agentsEntry/opsAgentEntry.js"]
 
 volumes:
