@@ -1,4 +1,3 @@
-// Add this to your serperSearch.js to debug the API call
 
 export async function serperWebSearch(query) {
   const apiKey = process.env.SERPER_API_KEY;

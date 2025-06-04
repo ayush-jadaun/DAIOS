@@ -1,6 +1,6 @@
 import { createReactAgent, AgentExecutor } from "langchain/agents";
 import { ChatOllama } from "@langchain/ollama";
-import { serperTool } from "./serperTool.js";
+import { serperTool } from "../tools/webSearch/serperTool.js";
 import { PromptTemplate } from "@langchain/core/prompts";
 import {
   readFileTool,
@@ -10,8 +10,8 @@ import {
   deleteFileTool,
   copyFileTool,
   moveFileTool,
-} from "./fileToolLangchain.js";
-import axios from "axios"; // <-- Use axios to call Python FastAPI LangGraph service
+} from "../tools/filetools/fileToolLangchain.js";
+import axios from "axios"; 
 
 // LLM instance
 const llm = new ChatOllama({
