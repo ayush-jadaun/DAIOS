@@ -2,7 +2,6 @@ import express from "express";
 import dotenv from "dotenv";
 import bodyParser from "body-parser";
 import multer from "multer";
-
 // Import agent controllers
 import {
   handleTaskRequest,
@@ -12,6 +11,7 @@ import {
 import { handleDebugTask } from "./controllers/debugAgentController.js";
 import { handleDevAgentTask } from "./controllers/devAgentController.js";
 import { handleOpsTask } from "./controllers/opsAgentController.js";
+import { handleOrchestraTask } from "./controllers/orchestraController.js";
 
 dotenv.config();
 
@@ -27,6 +27,7 @@ app.post("/agent/langchain-task", handleLangchainTask);
 app.post("/agent/debug", handleDebugTask);
 app.post("/agent/dev", handleDevAgentTask);
 app.post("/agent/ops", handleOpsTask);
+app.post("/agent/orchestra",handleOrchestraTask);
 
 app.get("/test", (req, res) => {
   res.json({ message: "Server is running" });
