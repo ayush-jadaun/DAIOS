@@ -12,6 +12,7 @@ import {
   moveFileTool,
 } from "../tools/filetools/fileToolLangchain.js";
 import axios from "axios"; 
+import { queryMemory,addToMemory } from "../memory/chromaClient.js";
 
 // LLM instance
 const llm = new ChatOllama({
@@ -145,37 +146,40 @@ async function callPythonTaskPlanner(task) {
   }
 }
 
-// Main exported function
 export async function runLangchainAgent(userTask) {
   try {
+    // Always fetch context from Chroma
+    const memoryResponse = await queryMemory("uploads", userTask, 3);
+
+    const docs =
+      Array.isArray(memoryResponse.documents) &&
+      Array.isArray(memoryResponse.documents[0])
+        ? memoryResponse.documents[0]
+        : [];
+    const context = docs.map((doc) => `---\n${doc}`).join("\n");
+
+    // Combine context and task
+    const enrichedTask = `Use the following relevant context to guide your response.\n\n${context}\n\nTask: ${userTask}`;
+
     console.log("Classifying task complexity for:", userTask);
-    const complexity = await classifyTaskLLM(userTask);
+    const complexity = await classifyTaskLLM(enrichedTask);
     console.log("Task classified as:", complexity);
 
     if (complexity === "complex") {
-      // Use the Python LangGraph task planner instead of old taskManager.js
+      // Use the Python LangGraph task planner for complex tasks
       console.log("Calling Python LangGraph task planner for complex task...");
-      const results = await callPythonTaskPlanner(userTask);
+      const results = await callPythonTaskPlanner(enrichedTask);
       return { mode: "task_manager", ...results };
     } else {
       // Use the simple agent path
       console.log("Using simple agent for task...");
       const result = await agentExecutor.invoke({
-        input: userTask,
+        input: enrichedTask,
       });
       return { mode: "simple", result: result.output ?? result };
     }
   } catch (error) {
     console.error("Agent execution failed:", error);
-    console.error("Error stack:", error.stack);
-
-    if (
-      error.message &&
-      error.message.includes("Agent stopped due to iteration limit")
-    ) {
-      return "I was able to search for information but reached the maximum number of steps. Please try rephrasing your question or asking for more specific information.";
-    }
-
     throw error;
   }
 }

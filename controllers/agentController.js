@@ -87,8 +87,21 @@ export async function handleLangchainTask(req, res) {
   if (!task) return res.status(400).json({ error: "No task provided" });
 
   try {
-    const response = await runLangchainAgent(task);
-    res.json({ result: response });
+    // Get relevant context from Chroma
+    const memoryResponse = await queryMemory("uploads", task, 3);
+
+    const docs =
+      Array.isArray(memoryResponse.documents) &&
+      Array.isArray(memoryResponse.documents[0])
+        ? memoryResponse.documents[0]
+        : [];
+
+    const context = docs.map((doc) => `---\n${doc}`).join("\n");
+
+    const enrichedTask = `Use the following relevant context to guide your response.\n\n${context}\n\nTask: ${task}`;
+
+    const response = await runLangchainAgent(enrichedTask);
+    res.json({ result: response, context_used: docs });
   } catch (err) {
     console.error("LangChain Agent Error:", err);
     res.status(500).json({ error: "Agent task failed" });
