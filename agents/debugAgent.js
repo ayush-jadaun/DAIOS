@@ -21,7 +21,6 @@ import { dependencyInspectorTool } from "../tools/debug/dependencyInspectorTool.
 import { envVarReaderTool } from "../tools/debug/envVarReaderTool.js";
 import { yamlParserTool } from "../tools/debug/yamlParserTool.js";
 import axios from "axios";
-import { queryMemory } from "../memory/chromaClient.js";
 import MessageBus from "../utils/MessageBus.js";
 
 // Initialize the bus for this agent
@@ -91,7 +90,7 @@ export const debugAgentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
-  maxIterations: 5,
+  maxIterations: 15,
   returnIntermediateSteps: true,
   handleParsingErrors: true,
 });
@@ -127,34 +126,22 @@ async function callPythonTaskPlanner(task) {
 
 export async function runDebugAgent(userTask, pubSubOptions = {}) {
   try {
-    // Always fetch relevant context from Chroma memory (optional, but helpful)
-    const memoryResponse = await queryMemory("uploads", userTask, 3);
-
-    const docs =
-      Array.isArray(memoryResponse.documents) &&
-      Array.isArray(memoryResponse.documents[0])
-        ? memoryResponse.documents[0]
-        : [];
-    const context = docs.map((doc) => `---\n${doc}`).join("\n");
-
-    // Combine context and task for better debugging
-    const enrichedTask = `Use the following relevant context to guide your debugging.\n\n${context}\n\nDebug Task: ${userTask}`;
+    // No context enrichment or Chroma memory lookup
 
     // Classify the task complexity
-    const complexity = await classifyTaskLLM(enrichedTask);
+    const complexity = await classifyTaskLLM(userTask);
 
     let result, mode;
-    // In debugAgent.js
     if (complexity === "complex") {
       console.log("Getting subtasks from Python task planner...");
-      const planResult = await callPythonTaskPlanner(enrichedTask);
+      const planResult = await callPythonTaskPlanner(userTask);
 
       // Execute each subtask
       const subtaskResults = [];
       for (const subtask of planResult.subtasks) {
         console.log(`Executing subtask: ${subtask}`);
         const subtaskResult = await debugAgentExecutor.invoke({
-          input: `${context}\n\nSubtask: ${subtask}`,
+          input: `Subtask: ${subtask}`,
         });
         subtaskResults.push({
           subtask,
@@ -172,7 +159,7 @@ export async function runDebugAgent(userTask, pubSubOptions = {}) {
       // Use the debug agent directly for simple tasks
       console.log("Using debug agent for simple task...");
       const agentResult = await debugAgentExecutor.invoke({
-        input: enrichedTask,
+        input: userTask,
       });
       result = agentResult.output ?? agentResult;
       mode = "simple";
@@ -187,7 +174,6 @@ export async function runDebugAgent(userTask, pubSubOptions = {}) {
           userTask,
           mode,
           result,
-          contextUsed: docs,
         }
       );
     }
@@ -211,12 +197,11 @@ export async function runDebugAgent(userTask, pubSubOptions = {}) {
 }
 
 // Updated subscribeToDebugTasks function - now it has access to runDebugAgent
-// In debugAgent.js - modify subscribeToDebugTasks to accept runDebugAgent as parameter
 export function subscribeToDebugTasks(debugAgentRunner = runDebugAgent) {
   bus.subscribe("agent.debug.task", async (msg) => {
     try {
       console.log("[DebugAgent] Processing message:", msg);
-      
+
       if (!msg || !msg.data || !msg.data.userTask) {
         console.error("[DebugAgent] Invalid message format:", msg);
         return;
@@ -234,26 +219,25 @@ export function subscribeToDebugTasks(debugAgentRunner = runDebugAgent) {
       // Use the passed function or default to runDebugAgent
       console.log("[DebugAgent] Running debug agent...");
       const result = await debugAgentRunner(userTask);
-      
+
       console.log("[DebugAgent] Debug result:", result);
       console.log("[DebugAgent] Publishing result to channel:", replyChannel);
-      
+
       // Publish the actual result
       await bus.publish(replyChannel, "DEBUG_RESULT", {
         output: result.result,
-        mode: result.mode
+        mode: result.mode,
       });
-      
+
       console.log("[DebugAgent] Successfully published result!");
-      
     } catch (err) {
       console.error("[DebugAgent] Error in handler:", err);
-      
+
       // If there's a reply channel, send error back
       if (msg?.data?.replyChannel) {
         try {
           await bus.publish(msg.data.replyChannel, "DEBUG_ERROR", {
-            error: err.message || "Unknown error occurred"
+            error: err.message || "Unknown error occurred",
           });
         } catch (publishErr) {
           console.error("[DebugAgent] Failed to publish error:", publishErr);
@@ -262,5 +246,3 @@ export function subscribeToDebugTasks(debugAgentRunner = runDebugAgent) {
     }
   });
 }
-
-

@@ -123,17 +123,3 @@ export const copyFileTool = new DynamicTool({
   },
 });
 
-// Debug export to verify tools are created properly
-console.log("File tools created:");
-console.log("readFileTool:", {
-  name: readFileTool.name,
-  description: readFileTool.description,
-});
-console.log("writeFileTool:", {
-  name: writeFileTool.name,
-  description: writeFileTool.description,
-});
-console.log("listFilesTool:", {
-  name: listFilesTool.name,
-  description: listFilesTool.description,
-});

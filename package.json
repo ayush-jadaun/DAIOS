@@ -22,5 +22,8 @@
     "multer": "^2.0.0",
     "redis": "^5.5.5",
     "zod": "^3.25.49"
+  },
+  "devDependencies": {
+    "eslint": "^9.28.0"
   }
 }

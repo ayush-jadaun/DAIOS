@@ -9,7 +9,6 @@ import { serviceHealthTool } from "../tools/ops/serviceHealthTool.js";
 import { portCheckerTool } from "../tools/ops/portCheckerTool.js";
 import { logFetcherTool } from "../tools/ops/logFetcherTool.js";
 import axios from "axios";
-import { queryMemory } from "../memory/chromaClient.js";
 import MessageBus from "../utils/MessageBus.js";
 
 const bus = new MessageBus("ops");
@@ -65,7 +64,7 @@ export const opsAgentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
-  maxIterations: 5,
+  maxIterations: 15,
   returnIntermediateSteps: true,
   handleParsingErrors: true,
 });
@@ -98,18 +97,8 @@ async function callPythonTaskPlanner(task) {
 
 export async function runOpsAgent(userTask, pubSubOptions = {}) {
   try {
-    const memoryResponse = await queryMemory("ops-uploads", userTask, 3);
-
-    const docs =
-      Array.isArray(memoryResponse.documents) &&
-      Array.isArray(memoryResponse.documents[0])
-        ? memoryResponse.documents[0]
-        : [];
-    const context = docs.map((doc) => `---\n${doc}`).join("\n");
-
-    const enrichedTask = `Use the following relevant context to guide your ops/infrastructure response.\n\n${context}\n\nOps Task: ${userTask}`;
-    console.log("Classifying ops task complexity for:", userTask);
-    const complexity = await classifyTaskLLM(enrichedTask);
+    // No memory/context enrichment
+    const complexity = await classifyTaskLLM(userTask);
     console.log("Ops task classified as:", complexity);
 
     let result, mode;
@@ -117,12 +106,12 @@ export async function runOpsAgent(userTask, pubSubOptions = {}) {
       console.log(
         "Calling Python LangGraph task planner for complex ops task..."
       );
-      result = await callPythonTaskPlanner(enrichedTask);
+      result = await callPythonTaskPlanner(userTask);
       mode = "task_manager";
     } else {
       console.log("Using simple ops agent for task...");
       const agentResult = await opsAgentExecutor.invoke({
-        input: enrichedTask,
+        input: userTask,
       });
       result = agentResult.output ?? agentResult;
       mode = "simple";
@@ -136,7 +125,6 @@ export async function runOpsAgent(userTask, pubSubOptions = {}) {
           userTask,
           mode,
           result,
-          contextUsed: docs,
         }
       );
     }

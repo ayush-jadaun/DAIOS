@@ -8,6 +8,9 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm install --legacy-peer-deps
 
+# Install ESLint globally for linter tool support
+RUN npm install -g eslint
+
 # Copy rest of the app
 COPY . .
 
