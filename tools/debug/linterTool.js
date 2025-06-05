@@ -1,33 +1,26 @@
-import { DynamicStructuredTool } from "@langchain/core/tools";
+import { DynamicTool } from "@langchain/core/tools";
 import { exec } from "child_process";
 import util from "util";
 const execAsync = util.promisify(exec);
 
-export const linterTool = new DynamicStructuredTool({
+export const linterTool = new DynamicTool({
   name: "linter",
   description:
-    "Run a linter (such as ESLint or Pylint) on the codebase or a specific file. Input: optional file path. Output: linter output and errors.",
-  schema: {
-    type: "object",
-    properties: {
-      filePath: {
-        type: "string",
-        description:
-          "The file or directory to lint. Leave empty to lint the whole project.",
-        default: "",
-      },
-      command: {
-        type: "string",
-        description: "The linter command to run, e.g. 'eslint' or 'pylint'.",
-        default: "eslint .",
-      },
-    },
-    required: [],
-  },
-  func: async ({ filePath = "", command = "eslint ." }) => {
+    "Run a linter (such as ESLint or Pylint) on the codebase or a specific file. Input should be an object or JSON string with 'filePath' and/or 'command'.",
+  func: async (inputJSON) => {
     try {
+      let parsedInput = {};
+      if (typeof inputJSON === "string") {
+        try {
+          parsedInput = JSON.parse(inputJSON);
+        } catch {}
+      } else if (typeof inputJSON === "object" && inputJSON !== null) {
+        parsedInput = inputJSON;
+      }
+      const filePath = parsedInput.filePath || "";
+      const command = parsedInput.command || "eslint .";
       const fullCmd = filePath ? `${command} ${filePath}` : command;
-      const { stdout, stderr } = await execAsync(fullCmd, { timeout: 60_000 });
+      const { stdout, stderr } = await execAsync(fullCmd, { timeout: 60000 });
       return { stdout, stderr };
     } catch (err) {
       return {

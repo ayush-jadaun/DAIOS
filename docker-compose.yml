@@ -81,6 +81,7 @@ services:
       - OLLAMA_URL=http://ollama:11434
       - TASK_PLANNER_URL=http://task-planner:8002
       - REDIS_URL=redis://redis:6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
     depends_on:
       - redis
       - chroma-service
@@ -99,6 +100,7 @@ services:
       - TASK_PLANNER_URL=http://task-planner:8002
       - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
     depends_on:
       - redis
       - chroma-service
@@ -117,6 +119,7 @@ services:
       - SERPER_API_KEY=${SERPER_API_KEY}
       - TASK_PLANNER_URL=http://task-planner:8002
       - REDIS_URL=redis://redis:6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
     depends_on:
       - redis
       - chroma-service
@@ -135,6 +138,7 @@ services:
       - TASK_PLANNER_URL=http://task-planner:8002
       - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
     depends_on:
       - redis
       - chroma-service
@@ -153,6 +157,7 @@ services:
       - TASK_PLANNER_URL=http://task-planner:8002
       - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
+      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
     depends_on:
       - redis
       - chroma-service

@@ -1,23 +1,28 @@
-import { DynamicStructuredTool } from "@langchain/core/tools";
+import { DynamicTool } from "@langchain/core/tools";
 import fs from "fs/promises";
+import path from "path";
 
-export const dependencyInspectorTool = new DynamicStructuredTool({
+export const dependencyInspectorTool = new DynamicTool({
   name: "dependency_inspector",
   description:
-    "Read and parse package.json or requirements.txt to list dependencies. Input: file path.",
-  schema: {
-    type: "object",
-    properties: {
-      filePath: {
-        type: "string",
-        description: "Path to package.json or requirements.txt.",
-      },
-    },
-    required: ["filePath"],
-  },
-  func: async ({ filePath }) => {
+    "Read and parse package.json or requirements.txt to list dependencies. Input is an object or JSON string with 'filePath'.",
+  func: async (inputJSON) => {
     try {
-      const content = await fs.readFile(filePath, "utf-8");
+      let parsedInput = {};
+      if (typeof inputJSON === "string") {
+        try {
+          parsedInput = JSON.parse(inputJSON);
+        } catch {}
+      } else if (typeof inputJSON === "object" && inputJSON !== null) {
+        parsedInput = inputJSON;
+      }
+      const filePath = parsedInput.filePath;
+      if (!filePath) return { error: "Missing required field: filePath" };
+      const sandboxDir = path.join(process.cwd(), "sandbox");
+      const absolutePath = path.resolve(sandboxDir, filePath);
+      if (!absolutePath.startsWith(sandboxDir))
+        return { error: "Access denied: Path outside of sandbox" };
+      const content = await fs.readFile(absolutePath, "utf-8");
       if (filePath.endsWith("package.json")) {
         const parsed = JSON.parse(content);
         return parsed.dependencies || {};
