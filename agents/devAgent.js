@@ -110,7 +110,7 @@ export const devAgentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
-  maxIterations: 10, // Increased from 7
+  maxIterations: 20, // Increased from 7
   returnIntermediateSteps: true,
   handleParsingErrors: true,
 });

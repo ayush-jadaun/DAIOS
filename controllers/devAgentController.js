@@ -39,7 +39,7 @@ export async function handleDevAgentTask(req, res) {
       res.status(504).json({ error: "Dev agent timeout" });
       bus.unsubscribe(replyChannel, handler);
     }
-  }, 25000);
+  }, 60000);
 }
 
 /**

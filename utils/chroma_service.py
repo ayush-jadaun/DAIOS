@@ -17,7 +17,12 @@ class QueryRequest(BaseModel):
     collection: str
     query_texts: List[str]
     n_results: int = 3
-
+class DeleteRequest(BaseModel):
+    collection: str
+    ids: List[str] = None
+    where: Dict[str, Any] = None
+    where_document: Dict[str, Any] = None
+    
 @app.post("/add")
 def add_to_collection(req: AddRequest):
     collection = client.get_or_create_collection(req.collection)
@@ -29,3 +34,10 @@ def query_collection(req: QueryRequest):
     collection = client.get_or_create_collection(req.collection)
     results = collection.query(query_texts=req.query_texts, n_results=req.n_results)
     return results
+
+
+@app.post("/delete")
+def delete_from_collection(req: DeleteRequest):
+    collection = client.get_or_create_collection(req.collection)
+    result = collection.delete(ids=req.ids, where=req.where, where_document=req.where_document)
+    return {"status": "ok", "result": result}
