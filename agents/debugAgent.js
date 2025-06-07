@@ -1,5 +1,5 @@
 import { createReactAgent, AgentExecutor } from "langchain/agents";
-import { ChatOllama } from "@langchain/ollama";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { debugAgentPrompt } from "../prompts/debugAgentPrompt.js";
 import { serperTool } from "../tools/webSearch/serperTool.js";
 import {
@@ -16,24 +16,22 @@ import { semanticCodeSearchTool } from "../tools/debug/sementicCodeSearchTool.js
 import { linterTool } from "../tools/debug/linterTool.js";
 import { stackTraceTool } from "../tools/debug/stackTraceTool.js";
 import { testRunnerTool } from "../tools/debug/testRunnerTool.js";
+import { yamlParserTool } from "../tools/debug/yamlParserTool.js";
 import { logFileReaderTool } from "../tools/debug/logFileReaderTool.js";
 import { dependencyInspectorTool } from "../tools/debug/dependencyInspectorTool.js";
 import { envVarReaderTool } from "../tools/debug/envVarReaderTool.js";
-import { yamlParserTool } from "../tools/debug/yamlParserTool.js";
-import axios from "axios";
 import MessageBus from "../utils/MessageBus.js";
 
-// Initialize the bus for this agent
+// Initialize the message bus for Debug Agent
 const bus = new MessageBus("debug");
 
-// LLM instance
-const llm = new ChatOllama({
-  model: "llama3",
-  baseUrl: process.env.OLLAMA_URL || "http://ollama:11434",
+// Use Gemini instead of Ollama
+const llm = new ChatGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_API_KEY,
+  model: "models/gemini-2.0-flash",
   temperature: 0,
 });
 
-// Tools setup and validation
 const tools = [
   serperTool,
   readFileTool,
@@ -63,6 +61,11 @@ const validTools = tools.filter((tool) => {
 
   if (!isValid) {
     console.error("INVALID TOOL DETECTED:", tool);
+    console.error("Tool structure:", {
+      name: tool?.name,
+      description: tool?.description,
+      func: typeof tool?.func,
+    });
   }
   return isValid;
 });
@@ -90,82 +93,30 @@ export const debugAgentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
-  maxIterations: 15,
+  maxIterations: 10, // Reduced to prevent infinite loops
   returnIntermediateSteps: true,
-  handleParsingErrors: true,
+  handleParsingErrors: (error) => {
+    console.error("Parsing error:", error);
+    return "I encountered a formatting error. Let me try again with the correct format.\n\nThought: I need to follow the exact format specified.";
+  },
 });
-
-// LLM-based classifier: decides simple/complex
-async function classifyTaskLLM(task) {
-  const prompt = `
-Is the following debug task SIMPLE (can be answered in a single step) or COMPLEX (requires multiple subtasks or a step-by-step plan)? 
-Reply with exactly "simple" or "complex" only.
-
-Debug Task: ${task}
-`;
-  const result = await llm.invoke(prompt);
-  const answer = result.content.trim().toLowerCase();
-  if (answer.startsWith("complex")) return "complex";
-  return "simple";
-}
-
-// Call the Python FastAPI LangGraph Task Planner
-async function callPythonTaskPlanner(task) {
-  try {
-    // Adjust port/URL if your FastAPI service runs elsewhere
-    const resp = await axios.post("http://task-planner:8002/plan", { task });
-    return resp.data;
-  } catch (err) {
-    console.error(
-      "Error calling Python task planner:",
-      err?.response?.data || err.message
-    );
-    throw err;
-  }
-}
 
 export async function runDebugAgent(userTask, pubSubOptions = {}) {
   try {
-    // No context enrichment or Chroma memory lookup
+    console.log("🚀 Starting debug agent with task:", userTask);
 
-    // Classify the task complexity
-    const complexity = await classifyTaskLLM(userTask);
+    const startTime = Date.now();
+    const agentResult = await debugAgentExecutor.invoke({
+      input: userTask,
+    });
 
-    let result, mode;
-    if (complexity === "complex") {
-      console.log("Getting subtasks from Python task planner...");
-      const planResult = await callPythonTaskPlanner(userTask);
+    const duration = Date.now() - startTime;
+    console.log(`✅ Agent completed in ${duration}ms`);
+    console.log("📊 Agent result:", agentResult);
 
-      // Execute each subtask
-      const subtaskResults = [];
-      for (const subtask of planResult.subtasks) {
-        console.log(`Executing subtask: ${subtask}`);
-        const subtaskResult = await debugAgentExecutor.invoke({
-          input: `Subtask: ${subtask}`,
-        });
-        subtaskResults.push({
-          subtask,
-          result: subtaskResult.output,
-        });
-      }
+    const result = agentResult.output ?? agentResult;
+    const mode = "simple";
 
-      result = {
-        originalTask: userTask,
-        subtasks: planResult.subtasks,
-        results: subtaskResults,
-      };
-      mode = "complex_executed";
-    } else {
-      // Use the debug agent directly for simple tasks
-      console.log("Using debug agent for simple task...");
-      const agentResult = await debugAgentExecutor.invoke({
-        input: userTask,
-      });
-      result = agentResult.output ?? agentResult;
-      mode = "simple";
-    }
-
-    // Publish the result to the bus if requested
     if (pubSubOptions.publishResult) {
       await bus.publish(
         pubSubOptions.publishChannel || "agent.debug",
@@ -174,14 +125,17 @@ export async function runDebugAgent(userTask, pubSubOptions = {}) {
           userTask,
           mode,
           result,
+          contextUsed: [],
+          duration,
         }
       );
     }
 
-    return { mode, result };
+    return { mode, result, duration };
   } catch (error) {
-    console.error("Debug agent execution failed:", error);
-    // Optionally publish error
+    console.error("💥 Debug agent execution failed:", error);
+    console.error("Stack trace:", error.stack);
+
     if (pubSubOptions.publishResult) {
       await bus.publish(
         pubSubOptions.publishChannel || "agent.debug",
@@ -189,6 +143,7 @@ export async function runDebugAgent(userTask, pubSubOptions = {}) {
         {
           userTask,
           error: error.message || error,
+          stack: error.stack,
         }
       );
     }
@@ -196,18 +151,19 @@ export async function runDebugAgent(userTask, pubSubOptions = {}) {
   }
 }
 
-// Updated subscribeToDebugTasks function - now it has access to runDebugAgent
+// Listen for debug tasks via pubsub and auto-process
 export function subscribeToDebugTasks(debugAgentRunner = runDebugAgent) {
   bus.subscribe("agent.debug.task", async (msg) => {
     try {
       console.log("[DebugAgent] Processing message:", msg);
 
-      if (!msg || !msg.data || !msg.data.userTask) {
+      const data = msg.data || msg;
+      if (!data || !data.userTask) {
         console.error("[DebugAgent] Invalid message format:", msg);
         return;
       }
 
-      const { userTask, replyChannel } = msg.data;
+      const { userTask, replyChannel } = data;
       console.log("[DebugAgent] Received debug task:", userTask);
       console.log("[DebugAgent] Reply channel:", replyChannel);
 
@@ -216,14 +172,13 @@ export function subscribeToDebugTasks(debugAgentRunner = runDebugAgent) {
         return;
       }
 
-      // Use the passed function or default to runDebugAgent
+      // Use passed runner (for testing/mocking)
       console.log("[DebugAgent] Running debug agent...");
       const result = await debugAgentRunner(userTask);
 
       console.log("[DebugAgent] Debug result:", result);
       console.log("[DebugAgent] Publishing result to channel:", replyChannel);
 
-      // Publish the actual result
       await bus.publish(replyChannel, "DEBUG_RESULT", {
         output: result.result,
         mode: result.mode,
@@ -232,8 +187,6 @@ export function subscribeToDebugTasks(debugAgentRunner = runDebugAgent) {
       console.log("[DebugAgent] Successfully published result!");
     } catch (err) {
       console.error("[DebugAgent] Error in handler:", err);
-
-      // If there's a reply channel, send error back
       if (msg?.data?.replyChannel) {
         try {
           await bus.publish(msg.data.replyChannel, "DEBUG_ERROR", {
