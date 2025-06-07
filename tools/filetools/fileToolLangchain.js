@@ -23,20 +23,33 @@ export const writeFileTool = new DynamicTool({
   name: "writeFile",
   description:
     "Writes content to a file in the sandbox directory. Input should be a JSON string with 'filePath' and 'contents' fields.",
-  func: async (inputJSON) => {
+  func: async (input) => {
     try {
-      console.log("[writeFileTool] Raw input:", inputJSON);
-      const { filePath, contents } = JSON.parse(inputJSON);
+      console.log("[writeFileTool] Raw input:", input);
+      console.log("[writeFileTool] Input type:", typeof input);
 
-      // Remove the defensive quote stripping - it was causing issues
-      const safeContents = contents;
+      let parsedInput;
 
-      // Log what will actually be written
+      // Handle both JSON string and object inputs
+      if (typeof input === "string") {
+        parsedInput = JSON.parse(input);
+      } else if (typeof input === "object" && input !== null) {
+        parsedInput = input;
+      } else {
+        throw new Error("Invalid input format");
+      }
+
+      const { filePath, contents } = parsedInput;
+
+      if (!filePath) {
+        throw new Error("filePath is required");
+      }
+
+      // Handle undefined contents
+      const safeContents = contents ?? "";
+
       console.log(`[writeFileTool] Writing to: ${filePath}`);
-      console.log(
-        `[writeFileTool] Contents preview:`,
-        safeContents.substring(0, 100) + "..."
-      );
+      console.log(`[writeFileTool] Contents length: ${safeContents.length}`);
 
       const result = await fileTool.write(filePath, safeContents);
       return result;

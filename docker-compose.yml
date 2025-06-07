@@ -82,6 +82,7 @@ services:
       - TASK_PLANNER_URL=http://task-planner:8002
       - REDIS_URL=redis://redis:6379
       - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - redis
       - chroma-service
@@ -115,18 +116,15 @@ services:
     container_name: daios-dev-agent
     environment:
       - CHROMA_BRIDGE_URL=http://chroma-service:8001
-      - OLLAMA_URL=http://ollama:11434
       - SERPER_API_KEY=${SERPER_API_KEY}
-      - TASK_PLANNER_URL=http://task-planner:8002
       - REDIS_URL=redis://redis:6379
       - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - redis
       - chroma-service
-      - task-planner
-      - ollama
     volumes:
-      - /e/daios/sandbox:/app/sandbox
+      - ./sandbox:/app/sandbox
     command: ["node", "agentsEntry/devAgentEntry.js"]
 
   ops-agent:
@@ -158,6 +156,7 @@ services:
       - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
       - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - redis
       - chroma-service

@@ -314,15 +314,18 @@ function determineFinalStatus(workflowState, plan) {
 /**
  * Use Orchestra Agent prompt to coordinate step execution (simplified to prevent loops)
  */
+/**
+ * Use Orchestra Agent prompt to coordinate step execution
+ */
 async function coordinateStepExecution(currentStep, workflowState, userQuery) {
   try {
-    // Simplified coordination to prevent infinite loops
     const context = {
       step: currentStep.step,
       agent: currentStep.agent,
       subtask: currentStep.subtask,
       completedSteps: workflowState.completedSteps,
       failedSteps: workflowState.failedSteps.map((f) => f.step),
+      userQuery,
     };
 
     console.log(
@@ -330,13 +333,31 @@ async function coordinateStepExecution(currentStep, workflowState, userQuery) {
       context
     );
 
-    // Return simplified coordination response
-    return `Execute step ${currentStep.step}: ${currentStep.subtask} using ${currentStep.agent} agent`;
+    // Prepare prompt input
+    const promptInput = await orchestraAgentPrompt.format({
+      user_task: userQuery,
+      step_number: currentStep.step,
+      agent_type: currentStep.agent,
+      subtask: currentStep.subtask,
+      completed_steps: workflowState.completedSteps.join(", ") || "None",
+      failed_steps:
+        workflowState.failedSteps.map((f) => f.step).join(", ") || "None",
+    });
+
+    const response = await llm.invoke(promptInput);
+
+    console.log(
+      `[Orchestra] Coordination response for step ${currentStep.step}:`,
+      response
+    );
+
+    return response;
   } catch (error) {
     console.error("[Orchestra] Coordination failed:", error);
     return `Fallback coordination for step ${currentStep.step}: Execute ${currentStep.subtask} with ${currentStep.agent} agent`;
   }
 }
+
 
 /**
  * Execute the actual agent task with unique identification
