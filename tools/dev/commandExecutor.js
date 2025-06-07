@@ -42,10 +42,13 @@ const ALLOWED_COMMANDS = [
   "echo",
   "mkdir",
   "rmdir",
+  "apt-get",
+  "cd",
   // Process management
   "ps",
   "kill",
   "pkill",
+  "init",
 ];
 
 const DANGEROUS_COMMANDS = [
@@ -68,7 +71,7 @@ const DANGEROUS_COMMANDS = [
   "shutdown",
   "reboot",
   "halt",
-  "init",
+  ,
 ];
 
 const MAX_EXECUTION_TIME = 300000; // 5 minutes

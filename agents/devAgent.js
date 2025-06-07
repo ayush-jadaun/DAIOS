@@ -26,6 +26,7 @@ import { testGeneratorTool } from "../tools/dev/testGeneratorTool.js";
 import { projectScaffoldTool } from "../tools/dev/projectScaffoldTool.js";
 import { prIssueManagerTool } from "../tools/dev/prIssueManagerTool.js";
 import { ciConfigTool } from "../tools/dev/ciConfigTool.js";
+import { commandExecutorTool } from "../tools/dev/commandExecutor.js";
 import MessageBus from "../utils/MessageBus.js";
 
 // Initialize the message bus for Dev Agent
@@ -62,6 +63,7 @@ const tools = [
   projectScaffoldTool,
   prIssueManagerTool,
   ciConfigTool,
+  commandExecutorTool
 ];
 
 const validTools = tools.filter((tool) => {
