@@ -1,5 +1,5 @@
 import { createReactAgent, AgentExecutor } from "langchain/agents";
-import { ChatOllama } from "@langchain/ollama";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { opsAgentPrompt } from "../prompts/opsAgentPromt.js";
 import { processCheckerTool } from "../tools/ops/processCheckerTool.js";
 import { diskSpaceTool } from "../tools/ops/diskSpaceTool.js";
@@ -8,14 +8,14 @@ import { cpuMemTool } from "../tools/ops/cpuMemTool.js";
 import { serviceHealthTool } from "../tools/ops/serviceHealthTool.js";
 import { portCheckerTool } from "../tools/ops/portCheckerTool.js";
 import { logFetcherTool } from "../tools/ops/logFetcherTool.js";
-import axios from "axios";
 import MessageBus from "../utils/MessageBus.js";
 
 const bus = new MessageBus("ops");
 
-const llm = new ChatOllama({
-  model: "llama3",
-  baseUrl: process.env.OLLAMA_URL || "http://ollama:11434",
+// Use Gemini instead of Ollama
+const llm = new ChatGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_API_KEY,
+  model: "models/gemini-2.0-flash",
   temperature: 0,
 });
 
@@ -66,56 +66,29 @@ export const opsAgentExecutor = new AgentExecutor({
   verbose: true,
   maxIterations: 15,
   returnIntermediateSteps: true,
-  handleParsingErrors: true,
+  handleParsingErrors: (error) => {
+    console.error("Parsing error:", error);
+    return "I encountered a formatting error. Let me try again with the correct format.\n\nThought: I need to follow the exact format specified.";
+  },
 });
-
-async function classifyTaskLLM(task) {
-  const prompt = `
-Is the following ops task SIMPLE (can be answered in a single step) or COMPLEX (requires multiple subtasks or a step-by-step plan)? 
-Reply with exactly "simple" or "complex" only.
-
-Ops Task: ${task}
-`;
-  const result = await llm.invoke(prompt);
-  const answer = result.content.trim().toLowerCase();
-  if (answer.startsWith("complex")) return "complex";
-  return "simple";
-}
-
-async function callPythonTaskPlanner(task) {
-  try {
-    const resp = await axios.post("http://task-planner:8002/plan", { task });
-    return resp.data;
-  } catch (err) {
-    console.error(
-      "Error calling Python task planner:",
-      err?.response?.data || err.message
-    );
-    throw err;
-  }
-}
 
 export async function runOpsAgent(userTask, pubSubOptions = {}) {
   try {
-    // No memory/context enrichment
-    const complexity = await classifyTaskLLM(userTask);
-    console.log("Ops task classified as:", complexity);
+    console.log("🚀 Starting ops agent with task:", userTask);
 
-    let result, mode;
-    if (complexity === "complex") {
-      console.log(
-        "Calling Python LangGraph task planner for complex ops task..."
-      );
-      result = await callPythonTaskPlanner(userTask);
-      mode = "task_manager";
-    } else {
-      console.log("Using simple ops agent for task...");
-      const agentResult = await opsAgentExecutor.invoke({
-        input: userTask,
-      });
-      result = agentResult.output ?? agentResult;
-      mode = "simple";
-    }
+    const startTime = Date.now();
+
+    // Always use simple ops agent for all tasks
+    console.log("Using simple ops agent for task...");
+    const agentResult = await opsAgentExecutor.invoke({
+      input: userTask,
+    });
+    const result = agentResult.output ?? agentResult;
+    const mode = "simple";
+
+    const duration = Date.now() - startTime;
+    console.log(`✅ Ops agent completed in ${duration}ms`);
+    console.log("📊 Ops result:", result);
 
     if (pubSubOptions.publishResult) {
       await bus.publish(
@@ -125,13 +98,16 @@ export async function runOpsAgent(userTask, pubSubOptions = {}) {
           userTask,
           mode,
           result,
+          duration,
         }
       );
     }
 
-    return { mode, result };
+    return { mode, result, duration };
   } catch (error) {
-    console.error("Ops agent execution failed:", error);
+    console.error("💥 Ops agent execution failed:", error);
+    console.error("Stack trace:", error.stack);
+
     if (pubSubOptions.publishResult) {
       await bus.publish(
         pubSubOptions.publishChannel || "agent.ops",
@@ -139,6 +115,7 @@ export async function runOpsAgent(userTask, pubSubOptions = {}) {
         {
           userTask,
           error: error.message || error,
+          stack: error.stack,
         }
       );
     }

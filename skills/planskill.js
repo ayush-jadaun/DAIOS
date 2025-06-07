@@ -1,8 +1,56 @@
-import { ChatOllama } from "@langchain/ollama";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 
 /**
- * Enhanced planskill.js with better prompting and agent assignment
+ * Enhanced planskill.js with task complexity analysis to prevent over-planning
  */
+
+// Task complexity analysis prompt
+const COMPLEXITY_ANALYSIS_PROMPT = `Analyze this task for complexity and determine if it needs multi-step planning:
+
+TASK: "{task}"
+
+Consider these factors:
+1. Is this a simple, single-action task? (like "create hello world", "write a function", "fix this bug")
+2. Does it require multiple different types of work? (development + testing + deployment)
+3. Does it involve multiple components or systems?
+4. Are there clear dependencies between different parts?
+
+COMPLEXITY LEVELS:
+- SIMPLE: Single action, one agent can handle completely (1 step)
+- MODERATE: Needs 2-3 related steps, possibly involving 2 agents
+- COMPLEX: Multi-faceted project requiring 3+ steps across multiple agents
+
+Respond with JSON:
+{
+  "complexity": "SIMPLE|MODERATE|COMPLEX",
+  "reasoning": "Brief explanation",
+  "suggested_steps": 1-8,
+  "needs_testing": true/false,
+  "needs_deployment": true/false
+}`;
+
+const SIMPLE_TASK_PROMPT = `You are planning a simple task that should be handled by ONE agent in ONE step.
+
+TASK: {task}
+
+AVAILABLE AGENTS:
+- DEV: Code implementation, architecture design, feature development, file creation
+- DEBUG: Testing, debugging, code review, error analysis, performance optimization  
+- OPS: Deployment, infrastructure, CI/CD, containerization, monitoring
+
+Choose the most appropriate agent and create a single, focused subtask.
+
+OUTPUT FORMAT (JSON):
+[
+  {
+    "step": 1,
+    "agent": "DEV|DEBUG|OPS",
+    "subtask": "Clear, specific description of what to do",
+    "rationale": "Why this agent is best suited",
+    "dependencies": [],
+    "deliverables": ["What this step should produce"]
+  }
+]`;
 
 const ENHANCED_PLANNER_PROMPT = `You are an expert software project planner who breaks down complex tasks into actionable subtasks for specialized AI agents.
 
@@ -17,14 +65,18 @@ CONTEXT:
 - Conversation Summary: {summary}
 - Difficulty Level: {difficulty}/100
 - Potential Ambiguities: {vague_parts}
+- Task Complexity: {complexity}
+- Needs Testing: {needs_testing}
+- Needs Deployment: {needs_deployment}
 
 PLANNING REQUIREMENTS:
-1. Break the task into 3-8 atomic, sequential subtasks
+1. Break the task into {suggested_steps} atomic, sequential subtasks
 2. Each subtask should be completable by a single agent
 3. Assign the most appropriate agent (DEV/DEBUG/OPS) for each subtask
 4. Consider dependencies between subtasks
 5. Be specific and actionable in subtask descriptions
-6. Include verification/testing steps where appropriate
+6. Only include testing if explicitly needed or requested
+7. Only include deployment/ops if explicitly needed or requested
 
 OUTPUT FORMAT (JSON):
 [
@@ -40,30 +92,15 @@ OUTPUT FORMAT (JSON):
 
 Generate the plan now:`;
 
-const AGENT_ASSIGNMENT_PROMPT = `Given this subtask: "{subtask}"
-
-AGENT CAPABILITIES:
-- DEV: Code implementation, architecture, feature development, technical design, API creation, database design
-- DEBUG: Testing, debugging, code review, performance analysis, error handling, quality assurance, validation
-- OPS: Deployment, infrastructure, CI/CD, containerization, monitoring, security, scaling, environment management
-
-Which agent should handle this subtask and why?
-
-Respond with JSON:
-{
-  "agent": "DEV|DEBUG|OPS",
-  "confidence": 0.0-1.0,
-  "rationale": "Brief explanation"
-}`;
-
-const llm = new ChatOllama({
-  model: "llama3",
-  baseUrl: process.env.OLLAMA_URL || "http://ollama:11434",
-  temperature: 0.1, // Slightly higher for more creative planning
+// Gemini LLM instance
+const llm = new ChatGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_API_KEY,
+  model: "models/gemini-2.0-flash",
+  temperature: 0.1,
 });
 
 /**
- * Enhanced planskill function with better prompting and validation
+ * Enhanced planskill function with complexity analysis
  */
 export async function planskill({
   user_query,
@@ -74,42 +111,25 @@ export async function planskill({
   try {
     console.log("[planskill] Planning task:", user_query);
 
-    // Format the enhanced prompt
-    const prompt = ENHANCED_PLANNER_PROMPT.replace("{task}", user_query)
-      .replace("{summary}", summary_of_conversation || "None")
-      .replace("{difficulty}", difficulty_level)
-      .replace(
-        "{vague_parts}",
-        possible_vague_parts_of_query.length > 0
-          ? possible_vague_parts_of_query.join(", ")
-          : "None"
-      );
+    // Step 1: Analyze task complexity
+    const complexityAnalysis = await analyzeTaskComplexity(user_query);
+    console.log("[planskill] Complexity analysis:", complexityAnalysis);
 
-    // Get the plan from LLM
-    const result = await llm.invoke(prompt);
-    const response =
-      typeof result === "string" ? result : result?.content ?? "";
-
-    console.log("[planskill] Raw LLM response:", response);
-
-    // Try to parse JSON response
+    // Step 2: Generate appropriate plan based on complexity
     let planSteps;
-    try {
-      // Extract JSON from response (handle cases where LLM adds extra text)
-      const jsonMatch = response.match(/\[[\s\S]*\]/);
-      if (jsonMatch) {
-        planSteps = JSON.parse(jsonMatch[0]);
-      } else {
-        throw new Error("No JSON array found in response");
-      }
-    } catch (parseError) {
-      console.warn(
-        "[planskill] JSON parsing failed, falling back to text parsing"
+    if (complexityAnalysis.complexity === "SIMPLE") {
+      planSteps = await generateSimplePlan(user_query);
+    } else {
+      planSteps = await generateComplexPlan(
+        user_query,
+        summary_of_conversation,
+        possible_vague_parts_of_query,
+        difficulty_level,
+        complexityAnalysis
       );
-      planSteps = await fallbackTextParsing(response, user_query);
     }
 
-    // Validate and enhance the plan
+    // Step 3: Validate and enhance the plan
     const validatedPlan = await validateAndEnhancePlan(planSteps, user_query);
 
     console.log("[planskill] Final plan:", validatedPlan);
@@ -122,69 +142,235 @@ export async function planskill({
 }
 
 /**
- * Fallback text parsing when JSON parsing fails
+ * Analyze task complexity to determine planning approach
  */
-async function fallbackTextParsing(response, userQuery) {
-  const lines = response.split("\n").filter((line) => line.trim());
-  const steps = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-
-    // Look for numbered steps or bullet points
-    const stepMatch = line.match(/^(\d+\.|\*|\-)\s*(.+)/);
-    if (stepMatch) {
-      const subtask = stepMatch[2].trim();
-      if (subtask.length > 10) {
-        // Ignore very short lines
-        // Use enhanced agent assignment
-        const assignment = await assignAgentWithLLM(subtask);
-        steps.push({
-          step: steps.length + 1,
-          agent: assignment.agent,
-          subtask: subtask,
-          rationale: assignment.rationale,
-          dependencies: [],
-          deliverables: [`Output from: ${subtask}`],
-        });
-      }
-    }
-  }
-
-  return steps.length > 0 ? steps : await simpleFallbackPlan(userQuery);
-}
-
-/**
- * Use LLM to assign agent for a specific subtask
- */
-async function assignAgentWithLLM(subtask) {
+async function analyzeTaskComplexity(userQuery) {
   try {
-    const prompt = AGENT_ASSIGNMENT_PROMPT.replace("{subtask}", subtask);
+    const prompt = COMPLEXITY_ANALYSIS_PROMPT.replace("{task}", userQuery);
     const result = await llm.invoke(prompt);
     const response =
       typeof result === "string" ? result : result?.content ?? "";
 
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      const assignment = JSON.parse(jsonMatch[0]);
+      const analysis = JSON.parse(jsonMatch[0]);
       return {
-        agent: assignment.agent || guessAgentFallback(subtask),
-        rationale: assignment.rationale || "LLM assignment",
+        complexity: analysis.complexity || "MODERATE",
+        reasoning: analysis.reasoning || "Default analysis",
+        suggested_steps: analysis.suggested_steps || 2,
+        needs_testing: analysis.needs_testing || false,
+        needs_deployment: analysis.needs_deployment || false,
       };
     }
   } catch (error) {
-    console.warn("[planskill] LLM agent assignment failed:", error);
+    console.warn("[planskill] Complexity analysis failed:", error);
   }
 
+  // Fallback heuristic analysis
+  return analyzeComplexityHeuristic(userQuery);
+}
+
+/**
+ * Heuristic-based complexity analysis fallback
+ */
+function analyzeComplexityHeuristic(userQuery) {
+  const lower = userQuery.toLowerCase();
+
+  // Simple task indicators
+  const simpleIndicators = [
+    "create hello world",
+    "write a simple",
+    "make a basic",
+    "generate a",
+    "create a file",
+    "write hello world",
+    "simple function",
+    "basic script",
+    "quick example",
+    "show me how",
+    "demonstrate",
+  ];
+
+  // Complex task indicators
+  const complexIndicators = [
+    "full application",
+    "complete system",
+    "entire project",
+    "end-to-end",
+    "production ready",
+    "deploy",
+    "ci/cd",
+    "docker",
+    "test suite",
+    "comprehensive",
+    "scalable",
+    "microservice",
+    "api with tests",
+    "full stack",
+  ];
+
+  // Check for simple patterns
+  if (simpleIndicators.some((indicator) => lower.includes(indicator))) {
+    return {
+      complexity: "SIMPLE",
+      reasoning: "Simple task pattern detected",
+      suggested_steps: 1,
+      needs_testing: false,
+      needs_deployment: false,
+    };
+  }
+
+  // Check for complex patterns
+  if (complexIndicators.some((indicator) => lower.includes(indicator))) {
+    return {
+      complexity: "COMPLEX",
+      reasoning: "Complex task pattern detected",
+      suggested_steps: 4,
+      needs_testing: true,
+      needs_deployment: true,
+    };
+  }
+
+  // Check if testing is explicitly mentioned
+  const needsTesting =
+    lower.includes("test") ||
+    lower.includes("verify") ||
+    lower.includes("validate");
+
+  // Check if deployment is explicitly mentioned
+  const needsDeployment =
+    lower.includes("deploy") ||
+    lower.includes("docker") ||
+    lower.includes("container");
+
   return {
-    agent: guessAgentFallback(subtask),
-    rationale: "Fallback heuristic assignment",
+    complexity: "MODERATE",
+    reasoning: "Moderate complexity assumed",
+    suggested_steps:
+      needsTesting && needsDeployment
+        ? 3
+        : needsTesting || needsDeployment
+        ? 2
+        : 1,
+    needs_testing: needsTesting,
+    needs_deployment: needsDeployment,
   };
 }
 
 /**
- * Validate and enhance the generated plan
+ * Generate simple plan for basic tasks
  */
+async function generateSimplePlan(userQuery) {
+  try {
+    const prompt = SIMPLE_TASK_PROMPT.replace("{task}", userQuery);
+    const result = await llm.invoke(prompt);
+    const response =
+      typeof result === "string" ? result : result?.content ?? "";
+
+    const jsonMatch = response.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+  } catch (error) {
+    console.warn("[planskill] Simple plan generation failed:", error);
+  }
+
+  // Fallback simple plan
+  return [
+    {
+      step: 1,
+      agent: guessAgentFallback(userQuery),
+      subtask: userQuery,
+      rationale: "Single step execution",
+      dependencies: [],
+      deliverables: ["Completed task output"],
+    },
+  ];
+}
+
+/**
+ * Generate complex plan for multi-step tasks
+ */
+async function generateComplexPlan(
+  userQuery,
+  summary,
+  vagueParts,
+  difficulty,
+  complexityAnalysis
+) {
+  try {
+    const prompt = ENHANCED_PLANNER_PROMPT.replace("{task}", userQuery)
+      .replace("{summary}", summary || "None")
+      .replace("{difficulty}", difficulty)
+      .replace(
+        "{vague_parts}",
+        vagueParts.length > 0 ? vagueParts.join(", ") : "None"
+      )
+      .replace("{complexity}", complexityAnalysis.complexity)
+      .replace("{suggested_steps}", complexityAnalysis.suggested_steps)
+      .replace("{needs_testing}", complexityAnalysis.needs_testing)
+      .replace("{needs_deployment}", complexityAnalysis.needs_deployment);
+
+    const result = await llm.invoke(prompt);
+    const response =
+      typeof result === "string" ? result : result?.content ?? "";
+
+    const jsonMatch = response.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+  } catch (error) {
+    console.warn("[planskill] Complex plan generation failed:", error);
+  }
+
+  // Fallback to heuristic planning
+  return generateHeuristicPlan(userQuery, complexityAnalysis);
+}
+
+/**
+ * Generate plan using heuristics
+ */
+function generateHeuristicPlan(userQuery, complexityAnalysis) {
+  const steps = [];
+
+  // Always start with the main development task
+  steps.push({
+    step: 1,
+    agent: "dev",
+    subtask: userQuery,
+    rationale: "Main implementation task",
+    dependencies: [],
+    deliverables: ["Implementation output"],
+  });
+
+  // Only add testing if explicitly needed
+  if (complexityAnalysis.needs_testing) {
+    steps.push({
+      step: 2,
+      agent: "debug",
+      subtask: `Test and verify the implementation`,
+      rationale: "Quality assurance",
+      dependencies: [1],
+      deliverables: ["Test results"],
+    });
+  }
+
+  // Only add deployment if explicitly needed
+  if (complexityAnalysis.needs_deployment) {
+    steps.push({
+      step: steps.length + 1,
+      agent: "ops",
+      subtask: `Deploy and configure the solution`,
+      rationale: "Deployment and operations",
+      dependencies: [steps.length],
+      deliverables: ["Deployed solution"],
+    });
+  }
+
+  return steps;
+}
+
+// Rest of the helper functions remain the same...
 async function validateAndEnhancePlan(planSteps, userQuery) {
   if (!Array.isArray(planSteps) || planSteps.length === 0) {
     throw new Error("Invalid plan structure");
@@ -202,21 +388,13 @@ async function validateAndEnhancePlan(planSteps, userQuery) {
   }));
 }
 
-/**
- * Validate agent name
- */
 function validateAgent(agent) {
   const validAgents = ["dev", "debug", "ops", "DEV", "DEBUG", "OPS"];
   return validAgents.includes(agent) ? agent.toLowerCase() : null;
 }
 
-/**
- * Enhanced fallback agent assignment with better heuristics
- */
 function guessAgentFallback(subtask) {
   const lower = subtask.toLowerCase();
-
-  // Development patterns
   const devPatterns = [
     "implement",
     "code",
@@ -232,9 +410,11 @@ function guessAgentFallback(subtask) {
     "algorithm",
     "feature",
     "component",
+    "hello world",
+    "file",
+    "script",
+    "program",
   ];
-
-  // Debug/test patterns
   const debugPatterns = [
     "test",
     "debug",
@@ -250,8 +430,6 @@ function guessAgentFallback(subtask) {
     "optimize",
     "quality",
   ];
-
-  // Ops patterns
   const opsPatterns = [
     "deploy",
     "docker",
@@ -269,37 +447,19 @@ function guessAgentFallback(subtask) {
 
   if (debugPatterns.some((pattern) => lower.includes(pattern))) return "debug";
   if (opsPatterns.some((pattern) => lower.includes(pattern))) return "ops";
-  if (devPatterns.some((pattern) => lower.includes(pattern))) return "dev";
-
-  // Default based on task complexity indicators
-  if (lower.includes("setup") || lower.includes("configure")) return "ops";
-  if (lower.includes("ensure") || lower.includes("verify")) return "debug";
-
-  return "dev"; // Default fallback
+  return "dev"; // Default to dev for most tasks
 }
 
-/**
- * Simple fallback plan when all else fails
- */
 async function simpleFallbackPlan(userQuery) {
   console.log("[planskill] Using simple fallback plan");
-
   return [
     {
       step: 1,
-      agent: "dev",
-      subtask: `Analyze and implement: ${userQuery}`,
-      rationale: "Fallback development task",
+      agent: guessAgentFallback(userQuery),
+      subtask: userQuery,
+      rationale: "Fallback single-step task",
       dependencies: [],
-      deliverables: ["Implementation or analysis results"],
-    },
-    {
-      step: 2,
-      agent: "debug",
-      subtask: `Test and verify the implementation`,
-      rationale: "Ensure quality and correctness",
-      dependencies: [1],
-      deliverables: ["Test results and validation"],
+      deliverables: ["Task completion"],
     },
   ];
 }

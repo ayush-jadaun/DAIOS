@@ -78,6 +78,16 @@ const validTools = tools.filter((tool) => {
       description: tool?.description,
       func: typeof tool?.func,
     });
+  } else {
+    // Log valid tool details for debugging
+    console.log(`✅ Valid tool: ${tool.name}`);
+    if (tool.name === "semantic_code_search") {
+      console.log("📋 Semantic search tool details:", {
+        name: tool.name,
+        description: tool.description,
+        schema: tool.schema || "No schema defined",
+      });
+    }
   }
   return isValid;
 });
@@ -94,7 +104,48 @@ if (validTools.length === 0) {
   throw new Error("No valid tools available! Check your tool definitions.");
 }
 
-// Wrap all your tools
+// Enhanced error handling to prevent loops
+let errorCount = 0;
+const MAX_PARSING_ERRORS = 2;
+
+const originalHandleParsingErrors = (error) => {
+  console.error("Parsing error:", error);
+  errorCount++;
+
+  const errorMessage = error.message || error.toString();
+
+  // If we've hit too many parsing errors, force a final answer
+  if (errorCount >= MAX_PARSING_ERRORS) {
+    console.error(
+      `Hit max parsing errors (${MAX_PARSING_ERRORS}), forcing final answer`
+    );
+    errorCount = 0; // Reset counter
+    return `Final Answer: I encountered repeated tool execution errors. The issue appears to be with tool input formatting or tool availability. Please check:
+
+1. Tool definitions and schemas
+2. Input parameter formatting 
+3. Tool accessibility and permissions
+
+Error details: ${errorMessage}`;
+  }
+
+  // Check for specific error types
+  if (errorMessage.includes("semantic_code_search")) {
+    return `I encountered an error with the semantic code search tool. Let me try using a different approach.
+
+Thought: The semantic_code_search tool is having issues. I should try using the listFiles tool first to see what files are available, then use readFile to examine specific files.`;
+  }
+
+  if (errorMessage.includes("formatting") || errorMessage.includes("format")) {
+    return `I need to use the correct format. Let me try a different tool or approach.
+
+Thought: There was a formatting issue. I should try using simpler tools or provide a direct answer based on common patterns.`;
+  }
+
+  return `I encountered a parsing error: ${errorMessage}
+
+Thought: Let me try using a different tool or approach to complete this task.`;
+};
 
 const agent = await createReactAgent({
   llm,
@@ -106,22 +157,37 @@ export const devAgentExecutor = new AgentExecutor({
   agent,
   tools: validTools,
   verbose: true,
-  maxIterations: 10, // Reduced to prevent infinite loops
+  maxIterations: 8, // Reduced from 10 to prevent long loops
   returnIntermediateSteps: true,
-  handleParsingErrors: (error) => {
-    console.error("Parsing error:", error);
-    return "I encountered a formatting error. Let me try again with the correct format.\n\nThought: I need to follow the exact format specified.";
-  },
+  maxExecutionTime: 120000, // 2 minute timeout
+  earlyStoppingMethod: "force", // Changed from "generate" to "force"
+  handleParsingErrors: originalHandleParsingErrors,
 });
+
+// Track consecutive errors to prevent infinite loops
+let consecutiveErrors = 0;
+const MAX_CONSECUTIVE_ERRORS = 3;
 
 export async function runDevAgent(userTask, pubSubOptions = {}) {
   try {
     console.log("🚀 Starting dev agent with task:", userTask);
 
+    // Reset error counters on new task
+    consecutiveErrors = 0;
+    errorCount = 0;
+
     const startTime = Date.now();
-    const agentResult = await devAgentExecutor.invoke({
+
+    // Add timeout wrapper
+    const agentPromise = devAgentExecutor.invoke({
       input: userTask,
     });
+
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Agent execution timeout")), 180000); // 3 minute max
+    });
+
+    const agentResult = await Promise.race([agentPromise, timeoutPromise]);
 
     const duration = Date.now() - startTime;
     console.log(`✅ Agent completed in ${duration}ms`);
@@ -144,10 +210,48 @@ export async function runDevAgent(userTask, pubSubOptions = {}) {
       );
     }
 
+    // Reset error counters on success
+    consecutiveErrors = 0;
+    errorCount = 0;
     return { mode, result, duration };
   } catch (error) {
+    consecutiveErrors++;
     console.error("💥 Dev agent execution failed:", error);
     console.error("Stack trace:", error.stack);
+    console.error(`Consecutive errors: ${consecutiveErrors}`);
+
+    // If we hit too many consecutive errors, provide fallback response
+    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      console.error(
+        "🔄 Too many consecutive errors, providing fallback response"
+      );
+      const fallbackResult = `I encountered repeated errors trying to process your request: "${userTask}". 
+
+This might be due to:
+1. Tool formatting issues
+2. Invalid search queries  
+3. System connectivity problems
+
+Please try rephrasing your request or breaking it into smaller, more specific tasks.`;
+
+      if (pubSubOptions.publishResult) {
+        await bus.publish(
+          pubSubOptions.publishChannel || "agent.dev",
+          "DEV_RESULT",
+          {
+            userTask,
+            mode: "fallback",
+            result: fallbackResult,
+            contextUsed: [],
+            duration: 0,
+          }
+        );
+      }
+
+      // Reset counter after fallback
+      consecutiveErrors = 0;
+      return { mode: "fallback", result: fallbackResult, duration: 0 };
+    }
 
     if (pubSubOptions.publishResult) {
       await bus.publish(

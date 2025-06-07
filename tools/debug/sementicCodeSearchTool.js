@@ -1,4 +1,4 @@
-import { DynamicStructuredTool } from "@langchain/core/tools";
+import { DynamicTool } from "@langchain/core/tools";
 import axios from "axios";
 import fs from "fs/promises";
 import path from "path";
@@ -98,9 +98,10 @@ function formatRelevanceScore(distance) {
   return relevance > 0 ? relevance.toFixed(1) : "0.0";
 }
 
-function truncateContent(content, maxLength = 2000) {
+function truncateContent(content, maxLength = 1000) {
+  // Reduced from 2000 to prevent long responses
   if (!content || content.length <= maxLength) return content;
-  return content.substring(0, maxLength) + "\n... [truncated]";
+  return content.substring(0, maxLength) + "\n... [content truncated]";
 }
 
 // File system search functions
@@ -113,7 +114,7 @@ async function findFilesInProject() {
       cwd: PROJECT_ROOT,
       ignore: ignore,
       absolute: true,
-      maxDepth: 10, // Prevent infinite recursion
+      maxDepth: 10,
     });
 
     return files;
@@ -215,7 +216,7 @@ async function fileSystemSearch(query, topK) {
   return allMatches.slice(0, topK);
 }
 
-// Vector search function (existing functionality)
+// Vector search function
 async function vectorSearch(query, topK) {
   console.log(`[VectorSearch] Searching: "${query}" (top ${topK})`);
 
@@ -271,160 +272,95 @@ async function vectorSearch(query, topK) {
           }`
         : null,
       content: truncateContent(doc),
-      metadata: {
-        ...metadata,
-        distance: distance,
-      },
+      metadata: { ...metadata, distance: distance },
       source: "vector",
     };
   });
 }
 
-export const semanticCodeSearchTool = new DynamicStructuredTool({
+export const semanticCodeSearchTool = new DynamicTool({
   name: "semantic_code_search",
   description:
-    "Search the codebase for relevant code snippets, files, or functions. Combines vector-based semantic search with direct file system search for comprehensive results. Input: a natural language query describing what you're looking for. Returns up to 20 relevant code snippets with metadata.",
+    "Search the codebase for relevant code snippets, files, or functions using natural language queries. Input is an object or JSON string with 'query' (required), optional 'topK' (1-10, default: 3), and optional 'searchMode' ('both', 'vector', or 'filesystem', default: 'both'). Returns file paths and code content.",
 
-  schema: {
-    type: "object",
-    properties: {
-      query: {
-        type: "string",
-        description:
-          "A descriptive query about what code you're looking for (max 1000 chars)",
-        maxLength: 1000,
-      },
-      topK: {
-        type: "number",
-        description: "Number of results to return (1-20, default: 3)",
-        minimum: 1,
-        maximum: 20,
-        default: 3,
-      },
-      searchMode: {
-        type: "string",
-        description: "Search mode: 'both' (default), 'vector', or 'filesystem'",
-        enum: ["both", "vector", "filesystem"],
-        default: "both",
-      },
-    },
-    required: ["query"],
-    additionalProperties: false,
-  },
-
-  func: async (input) => {
+  func: async (inputJSON) => {
     const startTime = Date.now();
 
     try {
-      console.log("[SemanticCodeSearch] Raw input received:", {
-        type: typeof input,
-        value: input,
-        stringified: JSON.stringify(input),
-      });
+      console.log("[SemanticCodeSearch] Input received:", inputJSON);
 
-      // Parse and validate input - more robust parsing
-      let query,
-        topK = 3,
-        searchMode = "both";
-
-      // Handle different input formats more carefully
-      if (typeof input === "string") {
+      // Parse input like the working envVarReaderTool
+      let parsedInput = {};
+      if (typeof inputJSON === "string") {
         try {
-          // Try to parse as JSON first
-          const parsed = JSON.parse(input);
-          if (parsed && typeof parsed === "object") {
-            query = parsed.query;
-            topK = parsed.topK || 3;
-            searchMode = parsed.searchMode || "both";
-          } else {
-            query = input; // Fallback to treating the string as the query
-          }
+          parsedInput = JSON.parse(inputJSON);
         } catch (parseError) {
-          console.log(
-            "[SemanticCodeSearch] JSON parse failed, using as plain query:",
-            parseError.message
-          );
-          query = input; // Treat the entire string as the query
+          // If JSON parsing fails, treat as simple query string
+          parsedInput = { query: inputJSON };
         }
-      } else if (typeof input === "object" && input !== null) {
-        query = input.query;
-        topK = input.topK || 3;
-        searchMode = input.searchMode || "both";
+      } else if (typeof inputJSON === "object" && inputJSON !== null) {
+        parsedInput = inputJSON;
       } else {
-        const errorMsg = {
-          error: "Invalid input format",
-          received: typeof input,
-          receivedValue: String(input),
-          expected: "object with query property or query string",
-        };
-        console.error(
-          "[SemanticCodeSearch] Input validation failed:",
-          errorMsg
-        );
-        return JSON.stringify(errorMsg);
+        return "Error: Invalid input format. Expected object or JSON string with 'query' field.";
       }
 
-      // Validate and sanitize inputs with better error handling
-      try {
-        if (!query) {
-          throw new Error("Query is required but was not provided");
-        }
-        query = validateAndSanitizeQuery(query);
-        topK = validateTopK(topK);
-      } catch (validationError) {
-        const errorMsg = {
-          error: `Input validation failed: ${validationError.message}`,
-          received_query:
-            typeof query === "string" ? query.substring(0, 100) : String(query),
-          received_input: input,
-        };
-        console.error("[SemanticCodeSearch] Validation failed:", errorMsg);
-        return JSON.stringify(errorMsg);
+      const { query, topK = 3, searchMode = "both" } = parsedInput;
+
+      if (!query) {
+        return "Error: Search query is required. Please provide a description of what code you're looking for.";
       }
+
+      // Validate inputs
+      const sanitizedQuery = validateAndSanitizeQuery(query);
+      const validatedTopK = Math.min(validateTopK(topK), 5); // Limit to max 5 results to prevent overwhelming responses
 
       console.log(
-        `[SemanticCodeSearch] Processed - Mode: ${searchMode}, Query: "${query}", Top: ${topK}`
+        `[SemanticCodeSearch] Searching - Query: "${sanitizedQuery}", Mode: ${searchMode}, Results: ${validatedTopK}`
       );
 
       let vectorResults = [];
       let fileSystemResults = [];
-      let errors = [];
+      let searchErrors = [];
 
       // Execute searches based on mode
       if (searchMode === "vector" || searchMode === "both") {
         try {
-          vectorResults = await vectorSearch(query, Math.ceil(topK / 2));
+          vectorResults = await vectorSearch(
+            sanitizedQuery,
+            Math.ceil(validatedTopK / 2)
+          );
         } catch (error) {
           console.error("[VectorSearch] Error:", error.message);
-          errors.push(`Vector search failed: ${error.message}`);
-
-          // If vector search fails and we're in "both" mode, increase filesystem results
+          searchErrors.push(`Vector search failed: ${error.message}`);
+          // Fallback to filesystem only
           if (searchMode === "both") {
-            topK = Math.min(20, topK * 2);
+            validatedTopK = Math.min(10, validatedTopK * 2);
           }
         }
       }
 
       if (searchMode === "filesystem" || searchMode === "both") {
         try {
-          const fsMatches = await fileSystemSearch(query, Math.ceil(topK / 2));
+          const fsMatches = await fileSystemSearch(
+            sanitizedQuery,
+            Math.ceil(validatedTopK / 2)
+          );
           fileSystemResults = fsMatches.map((match, index) => ({
             rank: index + 1,
-            relevance: "N/A",
+            relevance: "Filesystem",
             file: match.file,
             function: null,
             lines: `${match.contextStart}-${match.contextEnd}`,
-            content: match.context,
+            content: truncateContent(match.context, 800), // Shorter content for filesystem results
             metadata: {
               line_number: match.lineNumber,
               matched_line: match.line,
-              full_path: match.fullPath,
             },
             source: "filesystem",
           }));
         } catch (error) {
           console.error("[FileSystemSearch] Error:", error.message);
-          errors.push(`File system search failed: ${error.message}`);
+          searchErrors.push(`Filesystem search failed: ${error.message}`);
         }
       }
 
@@ -434,168 +370,72 @@ export const semanticCodeSearchTool = new DynamicStructuredTool({
       const seenFiles = new Set();
 
       allResults.forEach((result) => {
-        const fileKey = `${result.file}:${result.lines}`;
+        const fileKey = `${result.file}:${result.lines || "unknown"}`;
         if (!seenFiles.has(fileKey)) {
-          seenFiles.has(fileKey);
+          seenFiles.add(fileKey);
           uniqueResults.push(result);
         }
       });
 
-      // Sort by relevance, with vector results first (they have numeric relevance scores)
+      // Sort results - prioritize vector search results
       uniqueResults.sort((a, b) => {
         if (a.source === "vector" && b.source === "filesystem") return -1;
         if (a.source === "filesystem" && b.source === "vector") return 1;
-
-        const relevanceA = parseFloat(a.relevance) || 0;
-        const relevanceB = parseFloat(b.relevance) || 0;
-        return relevanceB - relevanceA;
+        return 0;
       });
 
-      const finalResults = uniqueResults.slice(0, topK);
+      const finalResults = uniqueResults.slice(0, validatedTopK);
 
       if (finalResults.length === 0) {
-        return JSON.stringify({
-          message: `No relevant code found for: "${query}"`,
-          suggestions: [
-            "Try broader or more specific search terms",
-            "Check if the codebase has been indexed (for vector search)",
-            "Verify files exist in the project directory",
-            "Try different search modes: 'vector', 'filesystem', or 'both'",
-          ],
-          search_info: {
-            collection: CHROMA_COLLECTION_NAME,
-            project_root: PROJECT_ROOT,
-            query_length: query.length,
-            search_mode: searchMode,
-            response_time_ms: Date.now() - startTime,
-            errors: errors,
-          },
-        });
+        let noResultsMsg = `No code found matching "${sanitizedQuery}".`;
+        if (searchErrors.length > 0) {
+          noResultsMsg += ` Search issues: ${searchErrors.join(", ")}`;
+        }
+        noResultsMsg += ` Try different search terms or check if files exist in the project.`;
+        return noResultsMsg;
       }
 
-      // Create formatted text output
-      let resultText = `🔍 Found ${finalResults.length} relevant code snippets for "${query}":\n`;
-      if (searchMode === "both") {
-        resultText += `📊 Search sources: Vector DB (${vectorResults.length}) + File System (${fileSystemResults.length})\n`;
-      }
-      resultText += `\n`;
+      // Format results in a clean, parseable way for the agent
+      let output = `SEARCH RESULTS for "${sanitizedQuery}" (${finalResults.length} found):\n\n`;
 
-      finalResults.forEach((result) => {
-        resultText += `=== Result ${result.rank} (${result.relevance}% relevant) ===\n`;
-        resultText += `📁 File: ${result.file}\n`;
-        if (result.function) resultText += `⚡ Function: ${result.function}\n`;
-        if (result.lines) resultText += `📍 Lines: ${result.lines}\n`;
-        resultText += `🔍 Source: ${result.source}\n`;
-        resultText += `💻 Code:\n${result.content}\n\n`;
+      finalResults.forEach((result, index) => {
+        output += `[${index + 1}] ${result.file}`;
+        if (result.lines) output += ` (lines ${result.lines})`;
+        if (result.function) output += ` - Function: ${result.function}`;
+        output += `\n`;
+
+        // Add code content with clear markers
+        output += `CODE:\n${result.content}\n`;
+        output += `---\n\n`;
       });
 
-      resultText += `\n📊 Search completed in ${Date.now() - startTime}ms`;
-      if (errors.length > 0) {
-        resultText += `\n⚠️  Warnings: ${errors.join(", ")}`;
+      const duration = Date.now() - startTime;
+      output += `Search completed in ${duration}ms`;
+
+      if (searchErrors.length > 0) {
+        output += ` (with ${searchErrors.length} search errors)`;
       }
 
       console.log(
-        `[SemanticCodeSearch] Returning ${finalResults.length} results successfully`
+        `[SemanticCodeSearch] Returning ${finalResults.length} results in ${duration}ms`
       );
-
-      // Return the response - ensure it's valid JSON
-      const response = {
-        success: true,
-        formatted_results: resultText,
-        structured_results: finalResults,
-        search_info: {
-          query: query,
-          result_count: finalResults.length,
-          search_mode: searchMode,
-          collection: CHROMA_COLLECTION_NAME,
-          project_root: PROJECT_ROOT,
-          vector_results: vectorResults.length,
-          filesystem_results: fileSystemResults.length,
-          response_time_ms: Date.now() - startTime,
-          errors: errors,
-        },
-      };
-
-      // Validate the response can be serialized
-      try {
-        const serialized = JSON.stringify(response);
-        console.log(
-          `[SemanticCodeSearch] Response serialized successfully (${serialized.length} chars)`
-        );
-        return serialized;
-      } catch (serializationError) {
-        console.error(
-          "[SemanticCodeSearch] Response serialization failed:",
-          serializationError
-        );
-        return JSON.stringify({
-          error: "Response serialization failed",
-          message: serializationError.message,
-          result_count: finalResults.length,
-        });
-      }
+      return output;
     } catch (err) {
       const errorDuration = Date.now() - startTime;
+      console.error("[SemanticCodeSearch] Critical error:", err.message);
 
-      console.error("[SemanticCodeSearch] Error:", {
-        message: err.message,
-        code: err.code,
-        status: err.response?.status,
-        duration_ms: errorDuration,
-      });
-
-      // Categorize errors for better user experience
-      let errorCategory = "unknown";
-      let userMessage = "";
-      let suggestions = [];
+      // Return simple, clear error message
+      let errorMsg = `Search failed: ${err.message}`;
 
       if (err.code === "ECONNREFUSED") {
-        errorCategory = "connection";
-        userMessage = `Cannot connect to semantic search service at ${CHROMA_BRIDGE_URL}`;
-        suggestions = [
-          "Verify the Chroma service is running",
-          "Try using filesystem search mode only",
-          "Check network connectivity",
-        ];
-      } else if (err.code === "ENOTFOUND") {
-        errorCategory = "dns";
-        userMessage = `Cannot resolve semantic search service host: ${CHROMA_BRIDGE_URL}`;
-        suggestions = [
-          "Check the CHROMA_BRIDGE_URL environment variable",
-          "Try using filesystem search mode only",
-          "Verify DNS/network configuration",
-        ];
-      } else if (err.code === "ECONNABORTED" || err.code === "ETIMEDOUT") {
-        errorCategory = "timeout";
-        userMessage = `Search request timed out after ${errorDuration}ms`;
-        suggestions = [
-          "Try a simpler query",
-          "Use filesystem search mode for faster results",
-          "Check if the service is overloaded",
-        ];
-      } else {
-        errorCategory = "general";
-        userMessage = `Search failed: ${err.message}`;
-        suggestions = [
-          "Try filesystem search mode",
-          "Check your query format",
-          "Verify project directory exists",
-        ];
+        errorMsg += " (Cannot connect to search service)";
+      } else if (err.code === "ETIMEDOUT") {
+        errorMsg += " (Search timeout)";
       }
 
-      return JSON.stringify({
-        error: userMessage,
-        category: errorCategory,
-        suggestions: suggestions,
-        debug_info: {
-          service_url: CHROMA_BRIDGE_URL,
-          collection: CHROMA_COLLECTION_NAME,
-          project_root: PROJECT_ROOT,
-          error_code: err.code,
-          status: err.response?.status,
-          duration_ms: errorDuration,
-        },
-      });
+      errorMsg += `. Try using filesystem search mode or a simpler query.`;
+
+      return errorMsg;
     }
   },
 });

@@ -3,7 +3,7 @@ import { runDevAgent } from "./devAgent.js";
 import { runDebugAgent } from "./debugAgent.js";
 import { runOpsAgent } from "./opsAgent.js";
 import { orchestraAgentPrompt } from "../prompts/orchestraAgentPromt.js";
-import { ChatOllama } from "@langchain/ollama";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import MessageBus from "../utils/MessageBus.js";
 
 // Map agent roles to their runner functions
@@ -15,10 +15,10 @@ const agentMap = {
 
 const bus = new MessageBus("orchestra");
 
-// Initialize the LLM for orchestra coordination
-const llm = new ChatOllama({
-  model: "llama3",
-  baseUrl: process.env.OLLAMA_URL || "http://ollama:11434",
+// Use Gemini instead of Ollama
+const llm = new ChatGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_API_KEY,
+  model: "models/gemini-2.0-flash",
   temperature: 0.1,
 });
 
@@ -26,6 +26,30 @@ const llm = new ChatOllama({
 const MAX_RETRIES_PER_STEP = 2;
 const STEP_TIMEOUT = 300000; // 5 minutes per step
 const MAX_EXECUTION_TIME = 600000; // 10 minutes total
+
+// Helper functions for error detection and handling
+function isInfiniteLoopError(error) {
+  const errorMessage = error.message || error.toString();
+
+  // Check for common infinite loop patterns
+  const loopPatterns = [
+    /formatting error.*try again/i,
+    /encountered a formatting error/i,
+    /let me try again with the correct format/i,
+    /need to follow the exact format/i,
+    /semantic_code_search/i,
+    /tool.*format.*error/i,
+  ];
+
+  return loopPatterns.some((pattern) => pattern.test(errorMessage));
+}
+
+function isToolFormattingError(error) {
+  const errorMessage = error.message || error.toString();
+  return /formatting error|format.*error|tool.*format|semantic_code_search/i.test(
+    errorMessage
+  );
+}
 
 // The main orchestra agent function with proper orchestration
 export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
@@ -102,6 +126,7 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
     conversationHistory: [],
     stepRetries: new Map(), // Track retries per step
     startTime,
+    plan, // Add plan to state for reference
   };
 
   console.log(
@@ -233,6 +258,7 @@ async function executeStepWithRetry(
 ) {
   const maxRetries = MAX_RETRIES_PER_STEP;
   let retryCount = workflowState.stepRetries.get(currentStep.step) || 0;
+  let lastError = null;
 
   while (retryCount <= maxRetries) {
     try {
@@ -242,10 +268,8 @@ async function executeStepWithRetry(
         }/${maxRetries + 1}`
       );
 
-      // Set retry count
       workflowState.stepRetries.set(currentStep.step, retryCount);
 
-      // Use the Orchestra Agent prompt to coordinate execution
       const orchestraResponse = await Promise.race([
         coordinateStepExecution(currentStep, workflowState, userQuery),
         new Promise((_, reject) =>
@@ -253,9 +277,8 @@ async function executeStepWithRetry(
         ),
       ]);
 
-      // Execute the actual agent task with timeout
       const agentResult = await Promise.race([
-        executeAgentTask(currentStep, stepId),
+        executeAgentTaskWithLoopDetection(currentStep, stepId, lastError),
         new Promise((_, reject) =>
           setTimeout(
             () => reject(new Error("Agent execution timeout")),
@@ -264,7 +287,6 @@ async function executeStepWithRetry(
         ),
       ]);
 
-      // Process the result through orchestra coordination
       const processedResult = await processStepResult(
         orchestraResponse,
         agentResult,
@@ -274,8 +296,18 @@ async function executeStepWithRetry(
 
       return processedResult;
     } catch (error) {
+      lastError = error;
       retryCount++;
       workflowState.stepRetries.set(currentStep.step, retryCount);
+
+      // Check for infinite loop patterns
+      if (isInfiniteLoopError(error)) {
+        console.error(
+          `[Orchestra] Infinite loop detected in step ${currentStep.step}:`,
+          error.message
+        );
+        throw new Error(`Infinite loop detected: ${error.message}`);
+      }
 
       console.warn(
         `[Orchestra] Step ${currentStep.step} attempt ${retryCount} failed:`,
@@ -288,12 +320,54 @@ async function executeStepWithRetry(
         );
       }
 
-      // Wait before retry (exponential backoff)
       const waitTime = Math.min(1000 * Math.pow(2, retryCount - 1), 10000);
       console.log(`[Orchestra] Waiting ${waitTime}ms before retry...`);
       await new Promise((resolve) => setTimeout(resolve, waitTime));
     }
   }
+}
+
+/**
+ * Enhanced agent task execution with loop detection
+ */
+async function executeAgentTaskWithLoopDetection(step, stepId, lastError) {
+  const runner = agentMap[step.agent];
+  if (!runner) {
+    throw new Error(`Unknown agent: ${step.agent}`);
+  }
+
+  console.log(
+    `[Orchestra] Delegating to ${step.agent.toUpperCase()} agent (${stepId}): ${
+      step.subtask
+    }`
+  );
+
+  // Add context to prevent loops and provide error information
+  let enhancedSubtask = `[Step ${step.step}] ${step.subtask}`;
+
+  // If we had a previous error, add guidance to avoid it
+  if (lastError && isToolFormattingError(lastError)) {
+    enhancedSubtask += `\n\nIMPORTANT: Previous attempt failed due to tool formatting error. 
+    Please ensure all tool calls use proper JSON format and avoid infinite retry loops.
+    If a tool consistently fails, try an alternative approach or skip that tool.
+    DO NOT use semantic_code_search or other tools that may cause formatting errors.`;
+  }
+
+  const result = await runner(enhancedSubtask, {
+    publishResult: false,
+    stepId,
+    stepNumber: step.step,
+    maxToolRetries: 2, // Limit tool retries
+    preventInfiniteLoops: true,
+  });
+
+  return {
+    stepId,
+    agent: step.agent,
+    subtask: step.subtask,
+    result,
+    timestamp: new Date().toISOString(),
+  };
 }
 
 /**
@@ -312,10 +386,7 @@ function determineFinalStatus(workflowState, plan) {
 }
 
 /**
- * Use Orchestra Agent prompt to coordinate step execution (simplified to prevent loops)
- */
-/**
- * Use Orchestra Agent prompt to coordinate step execution
+ * Use Orchestra Agent prompt to coordinate step execution with all required parameters
  */
 async function coordinateStepExecution(currentStep, workflowState, userQuery) {
   try {
@@ -333,7 +404,7 @@ async function coordinateStepExecution(currentStep, workflowState, userQuery) {
       context
     );
 
-    // Prepare prompt input
+    // Prepare prompt input with all required parameters
     const promptInput = await orchestraAgentPrompt.format({
       user_task: userQuery,
       step_number: currentStep.step,
@@ -342,6 +413,15 @@ async function coordinateStepExecution(currentStep, workflowState, userQuery) {
       completed_steps: workflowState.completedSteps.join(", ") || "None",
       failed_steps:
         workflowState.failedSteps.map((f) => f.step).join(", ") || "None",
+      plan: JSON.stringify(workflowState.plan || [], null, 2), // Add the missing plan parameter
+      deliverables: currentStep.deliverables || "Complete the assigned task",
+      context: JSON.stringify(context, null, 2),
+      error_prevention: `
+        CRITICAL: If tools fail repeatedly with formatting errors, try alternative approaches.
+        Avoid infinite retry loops. If a tool fails 2+ times, skip it or use a different method.
+        Focus on completing the core task even if some tools are unavailable.
+        DO NOT use semantic_code_search or other problematic tools.
+      `,
     });
 
     const response = await llm.invoke(promptInput);
@@ -354,13 +434,14 @@ async function coordinateStepExecution(currentStep, workflowState, userQuery) {
     return response;
   } catch (error) {
     console.error("[Orchestra] Coordination failed:", error);
-    return `Fallback coordination for step ${currentStep.step}: Execute ${currentStep.subtask} with ${currentStep.agent} agent`;
+    return `Fallback coordination for step ${currentStep.step}: Execute ${currentStep.subtask} with ${currentStep.agent} agent. 
+    AVOID infinite loops - if tools fail repeatedly, try alternative approaches.
+    DO NOT use semantic_code_search or other problematic tools.`;
   }
 }
 
-
 /**
- * Execute the actual agent task with unique identification
+ * Execute the actual agent task with unique identification (fallback method)
  */
 async function executeAgentTask(step, stepId) {
   const runner = agentMap[step.agent];
@@ -406,7 +487,9 @@ async function processStepResult(
     subtask: step.subtask,
     deliverables: step.deliverables,
     agentResult: agentResult.result,
-    orchestraCoordination: orchestraResponse.substring(0, 500), // Truncate for storage
+    orchestraCoordination:
+      orchestraResponse.content ||
+      orchestraResponse.toString().substring(0, 500), // Handle response properly
     status: "SUCCESS",
     timestamp: new Date().toISOString(),
     stepId: agentResult.stepId,
@@ -425,6 +508,14 @@ async function handleStepFailure(error, step, workflowState, plan, userQuery) {
     error.message
   );
 
+  // Special handling for infinite loop errors
+  if (isInfiniteLoopError(error)) {
+    console.error(
+      `[Orchestra] Infinite loop detected in step ${step.step}, this is critical`
+    );
+    return false; // Always abort on infinite loops
+  }
+
   // Check if we have made any progress
   const hasProgress = workflowState.completedSteps.length > 0;
 
@@ -436,20 +527,33 @@ async function handleStepFailure(error, step, workflowState, plan, userQuery) {
 
   // Check remaining steps
   const remainingSteps = plan.length - workflowState.currentStepIndex - 1;
+  const failureRate =
+    workflowState.failedSteps.length / (workflowState.currentStepIndex + 1);
 
-  // Decision logic
+  // Enhanced decision logic
   if (isCriticalStep && !hasProgress) {
     console.log("[Orchestra] Critical step failed with no progress, aborting");
     return false;
   }
 
-  if (workflowState.failedSteps.length >= Math.ceil(plan.length / 2)) {
-    console.log("[Orchestra] Too many failed steps, aborting");
+  if (failureRate > 0.6) {
+    // More than 60% failure rate
+    console.log("[Orchestra] High failure rate detected, aborting");
     return false;
   }
 
   if (remainingSteps === 0) {
     console.log("[Orchestra] No remaining steps, completing workflow");
+    return false;
+  }
+
+  // Check for repeated infinite loop errors
+  const recentLoopErrors = workflowState.failedSteps
+    .slice(-3)
+    .filter((f) => isInfiniteLoopError(new Error(f.error)));
+
+  if (recentLoopErrors.length >= 2) {
+    console.log("[Orchestra] Multiple infinite loop errors detected, aborting");
     return false;
   }
 
