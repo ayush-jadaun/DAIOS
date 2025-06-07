@@ -349,8 +349,7 @@ async function executeAgentTaskWithLoopDetection(step, stepId, lastError) {
   if (lastError && isToolFormattingError(lastError)) {
     enhancedSubtask += `\n\nIMPORTANT: Previous attempt failed due to tool formatting error. 
     Please ensure all tool calls use proper JSON format and avoid infinite retry loops.
-    If a tool consistently fails, try an alternative approach or skip that tool.
-    DO NOT use semantic_code_search or other tools that may cause formatting errors.`;
+    If a tool consistently fails, try an alternative approach or skip that too`;
   }
 
   const result = await runner(enhancedSubtask, {

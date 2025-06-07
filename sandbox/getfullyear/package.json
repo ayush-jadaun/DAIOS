@@ -1,0 +1,15 @@
+{
+  "name": "getfullyear",
+  "version": "1.0.0",
+  "description": "A simple package to get an array of the current and next full years.",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest"
+  },
+  "keywords": ["year", "full year", "current year", "next year"],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}
