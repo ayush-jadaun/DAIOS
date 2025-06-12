@@ -5,6 +5,7 @@ import { runOpsAgent } from "./opsAgent.js";
 import { orchestraAgentPrompt } from "../prompts/orchestraAgentPromt.js";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import MessageBus from "../utils/MessageBus.js";
+import MemoryManager from "../memory/MemoryManager.js";
 
 // Map agent roles to their runner functions
 const agentMap = {
@@ -27,6 +28,20 @@ const MAX_RETRIES_PER_STEP = 2;
 const STEP_TIMEOUT = 300000; // 5 minutes per step
 const MAX_EXECUTION_TIME = 600000; // 10 minutes total
 const PARALLEL_TIMEOUT = 90000; // 90 seconds for parallel execution
+
+// === MEMORY SYSTEM INITIALIZATION ===
+let memoryManager = null;
+try {
+  memoryManager = new MemoryManager("orchestra");
+  await memoryManager.initialize();
+  console.log("[OrchestraAgent] Memory system initialized successfully");
+} catch (error) {
+  console.warn(
+    "[OrchestraAgent] Memory system failed to initialize, running without memory:",
+    error.message
+  );
+  memoryManager = null;
+}
 
 // Helper functions for error detection and handling
 function isInfiniteLoopError(error) {
@@ -146,7 +161,7 @@ async function createParallelPlan(userTask) {
   return await planWithGemini(userTask);
 }
 
-// Step 2: Parallel orchestrator function with enhanced capabilities
+// Step 2: Parallel orchestrator function with enhanced capabilities and memory
 export async function orchestrateParallel(
   userTask,
   sessionId = "default",
@@ -164,11 +179,39 @@ export async function orchestrateParallel(
   const results = {};
   const startTime = Date.now();
 
+  // === Memory-enhanced context retrieval ===
+  let contextItems = [];
+  let enhancedInput = userTask;
+  if (memoryManager) {
+    try {
+      contextItems = await memoryManager.getRelevantContext(
+        userTask,
+        sessionId,
+        {
+          vectorTopK: 3, // Some context for orchestration
+          sessionLimit: 3, // Recent orchestration context
+        }
+      );
+      if (contextItems.length > 0) {
+        const contextString =
+          memoryManager.formatContextForPrompt(contextItems);
+        if (contextString) {
+          enhancedInput = `Previous Orchestration Context:\n${contextString}\n\nCurrent Orchestration Task: ${userTask}`;
+          console.log(
+            `[OrchestraAgent] Using context: ${contextItems.length} items`
+          );
+        }
+      }
+    } catch (error) {
+      console.warn("[OrchestraAgent] Context retrieval failed:", error.message);
+    }
+  }
+
   try {
     // Step 1: Get subtasks using enhanced planning
     const subtasks = options.useDetailedPlanning
-      ? await createParallelPlan(userTask)
-      : await planWithGemini(userTask);
+      ? await createParallelPlan(enhancedInput)
+      : await planWithGemini(enhancedInput);
 
     console.log(
       `[Orchestra] Generated ${subtasks.length} parallel subtasks:`,
@@ -205,7 +248,7 @@ export async function orchestrateParallel(
       // Enhanced task data with agent communication capabilities
       const taskData = {
         userTask: subtask,
-        originalTask: userTask,
+        originalTask: enhancedInput,
         sessionId,
         executionId,
         replyChannel,
@@ -261,7 +304,7 @@ export async function orchestrateParallel(
     // Step 5: Process and coordinate results
     const coordinatedResults = await coordinateResults(
       results,
-      userTask,
+      enhancedInput,
       executionId
     );
 
@@ -282,8 +325,26 @@ export async function orchestrateParallel(
       },
       agentResults: results,
       coordinatedOutput: coordinatedResults,
+      contextUsed: contextItems.length,
       timestamp: new Date().toISOString(),
     };
+
+    // Store result in memory
+    if (memoryManager) {
+      try {
+        await memoryManager.storeInteraction(
+          userTask,
+          coordinatedResults,
+          sessionId
+        );
+        console.log("[OrchestraAgent] Interaction stored in memory");
+      } catch (error) {
+        console.warn(
+          "[OrchestraAgent] Failed to store interaction:",
+          error.message
+        );
+      }
+    }
 
     console.log(
       `[Orchestra] Parallel execution ${executionId} completed in ${executionTime}ms`
@@ -397,7 +458,7 @@ function determineFinalStatus(results) {
   }
 }
 
-// Legacy sequential orchestrator (preserved for compatibility)
+// Legacy sequential orchestrator (preserved for compatibility) with memory
 export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
   const executionId = `seq_exec_${Date.now()}_${Math.random()
     .toString(36)
@@ -407,10 +468,39 @@ export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
     userTask
   );
 
+  // === Memory-enhanced context retrieval ===
+  let contextItems = [];
+  let enhancedInput = userTask;
+  const sessionId = pubSubOptions.sessionId || "default";
+  if (memoryManager) {
+    try {
+      contextItems = await memoryManager.getRelevantContext(
+        userTask,
+        sessionId,
+        {
+          vectorTopK: 3, // Some context for orchestration
+          sessionLimit: 3, // Recent orchestration context
+        }
+      );
+      if (contextItems.length > 0) {
+        const contextString =
+          memoryManager.formatContextForPrompt(contextItems);
+        if (contextString) {
+          enhancedInput = `Previous Orchestration Context:\n${contextString}\n\nCurrent Orchestration Task: ${userTask}`;
+          console.log(
+            `[OrchestraAgent] Using context: ${contextItems.length} items`
+          );
+        }
+      }
+    } catch (error) {
+      console.warn("[OrchestraAgent] Context retrieval failed:", error.message);
+    }
+  }
+
   try {
     // Step 1: Use planskill to decompose the task and create execution plan
     const plan = await planskill({
-      user_query: userTask,
+      user_query: enhancedInput,
       summary_of_conversation: "",
       possible_vague_parts_of_query: [],
       difficulty_level: 50,
@@ -428,8 +518,9 @@ export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
     // Step 2: Execute plan using Orchestra Agent orchestration
     const orchestraResult = await executeOrchestratedPlan(
       plan,
-      userTask,
-      executionId
+      enhancedInput,
+      executionId,
+      sessionId
     );
 
     // Step 3: Optionally publish result to message bus
@@ -439,6 +530,23 @@ export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
         "ORCHESTRA_RESULT",
         orchestraResult
       );
+    }
+
+    // Store result in memory
+    if (memoryManager) {
+      try {
+        await memoryManager.storeInteraction(
+          userTask,
+          orchestraResult,
+          sessionId
+        );
+        console.log("[OrchestraAgent] Interaction stored in memory");
+      } catch (error) {
+        console.warn(
+          "[OrchestraAgent] Failed to store interaction:",
+          error.message
+        );
+      }
     }
 
     console.log(
@@ -462,7 +570,12 @@ export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
 }
 
 // All the original sequential execution functions preserved
-async function executeOrchestratedPlan(plan, userQuery, executionId) {
+async function executeOrchestratedPlan(
+  plan,
+  userQuery,
+  executionId,
+  sessionId = "default"
+) {
   const startTime = Date.now();
   const workflowState = {
     executionId,
@@ -510,7 +623,8 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
         currentStep,
         workflowState,
         userQuery,
-        stepId
+        stepId,
+        sessionId
       );
 
       if (!workflowState.completedSteps.includes(currentStep.step)) {
@@ -567,10 +681,6 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
   const executionTime = Date.now() - startTime;
   const finalStatus = determineFinalStatusSequential(workflowState, plan);
 
-  console.log(
-    `[Orchestra] Execution ${executionId} finished in ${executionTime}ms with status: ${finalStatus}`
-  );
-
   return {
     executionId,
     originalTask: userQuery,
@@ -592,7 +702,8 @@ async function executeStepWithRetry(
   currentStep,
   workflowState,
   userQuery,
-  stepId
+  stepId,
+  sessionId = "default"
 ) {
   const maxRetries = MAX_RETRIES_PER_STEP;
   let retryCount = workflowState.stepRetries.get(currentStep.step) || 0;
@@ -616,7 +727,12 @@ async function executeStepWithRetry(
       ]);
 
       const agentResult = await Promise.race([
-        executeAgentTaskWithLoopDetection(currentStep, stepId, lastError),
+        executeAgentTaskWithLoopDetection(
+          currentStep,
+          stepId,
+          lastError,
+          sessionId
+        ),
         new Promise((_, reject) =>
           setTimeout(
             () => reject(new Error("Agent execution timeout")),
@@ -664,7 +780,12 @@ async function executeStepWithRetry(
   }
 }
 
-async function executeAgentTaskWithLoopDetection(step, stepId, lastError) {
+async function executeAgentTaskWithLoopDetection(
+  step,
+  stepId,
+  lastError,
+  sessionId = "default"
+) {
   const runner = agentMap[step.agent];
   if (!runner) {
     throw new Error(`Unknown agent: ${step.agent}`);
@@ -690,6 +811,7 @@ async function executeAgentTaskWithLoopDetection(step, stepId, lastError) {
     stepNumber: step.step,
     maxToolRetries: 2,
     preventInfiniteLoops: true,
+    sessionId,
   });
 
   return {
@@ -857,7 +979,7 @@ export function subscribeToOrchestraTasks(
         return;
       }
 
-      const { userTask, replyChannel } = data;
+      const { userTask, replyChannel, sessionId } = data;
       console.log(
         `[OrchestraAgent] Received user task ${requestId}:`,
         userTask
@@ -870,7 +992,7 @@ export function subscribeToOrchestraTasks(
         return;
       }
 
-      const result = await orchestraAgentRunner(userTask);
+      const result = await orchestraAgentRunner(userTask, { sessionId });
 
       await bus.publish(replyChannel, "ORCHESTRA_RESULT", result);
 
@@ -958,3 +1080,53 @@ export function subscribeToParallelOrchestraTasks() {
     }
   });
 }
+
+// === MEMORY MANAGEMENT UTILITIES ===
+export async function getOrchestraMemoryStatus() {
+  if (!memoryManager) {
+    return { status: "disabled", reason: "Memory system not initialized" };
+  }
+
+  try {
+    return await memoryManager.getMemoryStatus();
+  } catch (error) {
+    return { status: "error", error: error.message };
+  }
+}
+
+export async function clearOrchestraMemory(sessionId = null) {
+  if (!memoryManager) {
+    console.warn("[OrchestraAgent] Memory system not available");
+    return false;
+  }
+
+  try {
+    if (sessionId) {
+      memoryManager.clearSession(sessionId);
+      console.log(`[OrchestraAgent] Cleared session memory: ${sessionId}`);
+    } else {
+      await memoryManager.clearAllMemory();
+      console.log("[OrchestraAgent] Cleared all memory");
+    }
+    return true;
+  } catch (error) {
+    console.error("[OrchestraAgent] Failed to clear memory:", error);
+    return false;
+  }
+}
+
+export async function orchestraMemoryHealthCheck() {
+  if (!memoryManager) {
+    return { healthy: false, reason: "Memory system not initialized" };
+  }
+
+  try {
+    const health = await memoryManager.healthCheck();
+    return { healthy: health.sessionMemory, details: health };
+  } catch (error) {
+    return { healthy: false, error: error.message };
+  }
+}
+
+// Export the memory manager for direct access if needed
+export { memoryManager };

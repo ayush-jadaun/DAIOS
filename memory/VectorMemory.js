@@ -10,7 +10,7 @@ class VectorMemory {
     this.collectionName = collectionName;
     this.taskType = collectionName.replace("-memory", "");
     this.client = new ChromaRestClient(
-      process.env.CHROMA_URL || "http://localhost:8001"
+      process.env.CHROMA_URL || "http://chroma:8001"
     );
     this.initialized = false;
     this.fallbackMode = false;

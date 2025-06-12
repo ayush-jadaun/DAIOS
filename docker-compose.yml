@@ -113,20 +113,22 @@ services:
     command: ["node", "agentsEntry/debugAgentEntry.js"]
 
   dev-agent:
-    build: .
-    container_name: daios-dev-agent
-    environment:
-      - CHROMA_BRIDGE_URL=http://chroma-service:8001
-      - SERPER_API_KEY=${SERPER_API_KEY}
-      - REDIS_URL=redis://redis:6379
-      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-    depends_on:
-      - redis
-      - chroma-service
-    volumes:
-      - ./sandbox:/app/sandbox
-    command: ["node", "agentsEntry/devAgentEntry.js"]
+      build:
+        context: .        # path to the directory containing your Dockerfile
+        dockerfile: Dockerfile   # name of the Dockerfile inside ./dev
+      container_name: daios-dev-agent
+      environment:
+        - CHROMA_BRIDGE_URL=http://chroma-service:8001
+        - SERPER_API_KEY=${SERPER_API_KEY}
+        - REDIS_URL=redis://redis:6379
+        - GITHUB_TOKEN=${GITHUB_TOKEN}
+        - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      depends_on:
+        - redis
+        - chroma-service
+      volumes:
+        - ./sandbox:/app/sandbox
+      command: ["node", "agentsEntry/devAgentEntry.js"]
 
   ops-agent:
     build: .

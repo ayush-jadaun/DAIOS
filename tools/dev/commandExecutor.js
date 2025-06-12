@@ -52,11 +52,6 @@ const ALLOWED_COMMANDS = [
 ];
 
 const DANGEROUS_COMMANDS = [
-  "rm",
-  "del",
-  "format",
-  "fdisk",
-  "dd",
   "sudo",
   "su",
   "chmod",
