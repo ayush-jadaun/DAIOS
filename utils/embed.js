@@ -1,13 +1,34 @@
-import { CohereClient } from "cohere-ai";
-import dotenv from "dotenv"
-dotenv.config()
-const cohere = new CohereClient({ token: process.env.COHERE_API_KEY });
+import dotenv from "dotenv";
+dotenv.config();
 
-export async function getEmbedding(text) {
-  const res = await cohere.embed({
-    model: "embed-english-v3.0",
-    input_type: "search_document",
-    texts: [text],
+const GEMINI_API_KEY = process.env.GOOGLE_API_KEY;
+
+if (!GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY is not set in environment variables.");
+}
+
+export async function getGeminiEmbedding(text) {
+  const endpoint =
+    "https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedText?key=" +
+    GEMINI_API_KEY;
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      text,
+      taskType: "RETRIEVAL_DOCUMENT",
+    }),
   });
-  return res.embeddings[0];
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Gemini API error: ${err}`);
+  }
+
+  const result = await response.json();
+
+  return result.embedding?.values || [];
 }

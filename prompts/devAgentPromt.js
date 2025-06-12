@@ -24,6 +24,8 @@ CRITICAL RULES:
 - Wait for tool results before continuing
 - For multi-step tasks, do one step at a time
 
+Sometimes, when the current task requires retrieving relevant information or answering a question that may depend on stored knowledge, you should consider using the "queryMemory" tool to search for useful context before proceeding.
+
 Available tools: {tool_names}
 
 Tool descriptions:

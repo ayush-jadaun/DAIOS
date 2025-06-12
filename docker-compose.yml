@@ -34,39 +34,39 @@ services:
     depends_on:
       - chroma
 
-  task-planner:
-    build:
-      context: ./taskPlanner
-      dockerfile: Dockerfile
-    container_name: task-planner
-    environment:
-      - PYTHONUNBUFFERED=1
-      - OLLAMA_URL=http://ollama:11434
-    ports:
-      - "8002:8002"
-    depends_on:
-      - ollama
+  # task-planner:
+  #   build:
+  #     context: ./taskPlanner
+  #     dockerfile: Dockerfile
+  #   container_name: task-planner
+  #   environment:
+  #     - PYTHONUNBUFFERED=1
+  #     - OLLAMA_URL=http://ollama:11434
+  #   ports:
+  #     - "8002:8002"
+  #   depends_on:
+  #     - ollama
 
-  ollama:
-    image: ollama/ollama
-    container_name: ollama
-    runtime: nvidia # <-- Add this line for GPU support
-    deploy:         # <-- Add device reservations for Compose v3+
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    entrypoint: ["/bin/sh", "-c", "ollama pull llama3 || true; ollama serve"]
-    environment:
-      - OLLAMA_NUM_GPU=1     # <-- Optional: tell Ollama to use GPU if multiple present
-      - NVIDIA_VISIBLE_DEVICES=all # <-- Optional, but helps explicit device use
+  # ollama:
+  #   image: ollama/ollama
+  #   container_name: ollama
+  #   runtime: nvidia # <-- Add this line for GPU support
+  #   deploy:         # <-- Add device reservations for Compose v3+
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   restart: unless-stopped
+  #   entrypoint: ["/bin/sh", "-c", "ollama pull llama3 || true; ollama serve"]
+  #   environment:
+  #     - OLLAMA_NUM_GPU=1     # <-- Optional: tell Ollama to use GPU if multiple present
+  #     - NVIDIA_VISIBLE_DEVICES=all # <-- Optional, but helps explicit device use
 
   api-server:
     build: .
@@ -86,8 +86,8 @@ services:
     depends_on:
       - redis
       - chroma-service
-      - task-planner
-      - ollama
+      # - task-planner
+      # - ollama
     volumes:
       - /e/daios/sandbox:/app/sandbox
     command: ["node", "index.js"]
@@ -106,8 +106,8 @@ services:
     depends_on:
       - redis
       - chroma-service
-      - task-planner
-      - ollama
+      # - task-planner
+      # # - ollama
     volumes:
       - /e/daios/sandbox:/app/sandbox
     command: ["node", "agentsEntry/debugAgentEntry.js"]
@@ -142,8 +142,8 @@ services:
     depends_on:
       - redis
       - chroma-service
-      - task-planner
-      - ollama
+      # - task-planner
+      # - ollama
     volumes:
       - /e/daios/sandbox:/app/sandbox
     command: ["node", "agentsEntry/opsAgentEntry.js"]
@@ -162,12 +162,12 @@ services:
     depends_on:
       - redis
       - chroma-service
-      - task-planner
-      - ollama
+      # - task-planner
+      # - ollama
     volumes:
       - /e/daios/sandbox:/app/sandbox
     command: ["node", "agentsEntry/orchestraAgentEntry.js"]
 
 volumes:
   chroma_data:
-  ollama_data:
+  # ollama_data:

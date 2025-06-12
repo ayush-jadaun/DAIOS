@@ -3,11 +3,7 @@ import dotenv from "dotenv";
 import bodyParser from "body-parser";
 import multer from "multer";
 // Import agent controllers
-import {
-  handleTaskRequest,
-  handleFileUpload,
-  handleLangchainTask,
-} from "./controllers/agentController.js";
+
 import { handleDebugTask } from "./controllers/debugAgentController.js";
 import { handleDevAgentTask } from "./controllers/devAgentController.js";
 import { handleOpsTask } from "./controllers/opsAgentController.js";
@@ -21,9 +17,6 @@ app.use(bodyParser.json());
 const upload = multer({ dest: "uploads/" });
 
 // ROUTES
-app.post("/agent/task", handleTaskRequest);
-app.post("/agent/upload", upload.single("file"), handleFileUpload);
-app.post("/agent/langchain-task", handleLangchainTask);
 app.post("/agent/debug", handleDebugTask);
 app.post("/agent/dev", handleDevAgentTask);
 app.post("/agent/ops", handleOpsTask);

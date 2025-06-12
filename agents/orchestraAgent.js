@@ -26,6 +26,7 @@ const llm = new ChatGoogleGenerativeAI({
 const MAX_RETRIES_PER_STEP = 2;
 const STEP_TIMEOUT = 300000; // 5 minutes per step
 const MAX_EXECUTION_TIME = 600000; // 10 minutes total
+const PARALLEL_TIMEOUT = 90000; // 90 seconds for parallel execution
 
 // Helper functions for error detection and handling
 function isInfiniteLoopError(error) {
@@ -51,13 +52,358 @@ function isToolFormattingError(error) {
   );
 }
 
-// The main orchestra agent function with proper orchestration
-export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
+// Step 1: Use Gemini to decompose the user prompt into agent-specific subtasks
+async function planWithGemini(userTask) {
+  const systemPrompt = `
+You are a development orchestrator.
+Given a user request, decompose it into actionable subtasks for these agents:
+- dev: Development tasks, coding, implementation, features, APIs, functionality
+- debug: Testing, debugging, error handling, validation, quality assurance
+- ops: Deployment, infrastructure, monitoring, DevOps, system administration
+
+Return one subtask for each agent in this JSON format:
+[
+  {"agent": "dev", "subtask": "..."},
+  {"agent": "debug", "subtask": "..."},
+  {"agent": "ops", "subtask": "..."}
+]
+
+User request: "${userTask}"
+`;
+
+  const response = await llm.invoke(systemPrompt);
+  let subtasks = [];
+  try {
+    const content = response.content || response.output || response.toString();
+    subtasks = JSON.parse(content);
+  } catch (e) {
+    console.warn("[Orchestra] Failed to parse Gemini response, using fallback");
+    subtasks = [
+      {
+        agent: "dev",
+        subtask:
+          "Implement the core functionality and features for this request.",
+      },
+      {
+        agent: "debug",
+        subtask:
+          "Test and debug the implementation, ensure quality and error handling.",
+      },
+      {
+        agent: "ops",
+        subtask: "Handle deployment, infrastructure, and operational aspects.",
+      },
+    ];
+  }
+  return subtasks;
+}
+
+// Enhanced planskill integration for parallel execution
+async function createParallelPlan(userTask) {
+  try {
+    // First try to use planskill for detailed planning
+    const plan = await planskill({
+      user_query: userTask,
+      summary_of_conversation: "",
+      possible_vague_parts_of_query: [],
+      difficulty_level: 50,
+    });
+
+    if (Array.isArray(plan) && plan.length > 0) {
+      // Convert planskill output to parallel format
+      const agentTasks = { dev: [], debug: [], ops: [] };
+
+      plan.forEach((step) => {
+        if (step.agent && agentTasks[step.agent]) {
+          agentTasks[step.agent].push({
+            step: step.step,
+            subtask: step.subtask,
+            deliverables: step.deliverables,
+          });
+        }
+      });
+
+      // Create combined subtasks for each agent
+      const parallelPlan = Object.entries(agentTasks).map(([agent, tasks]) => ({
+        agent,
+        subtask:
+          tasks.length > 0
+            ? tasks.map((t) => `Step ${t.step}: ${t.subtask}`).join("\n")
+            : `Handle ${agent} aspects of: ${userTask}`,
+        steps: tasks,
+      }));
+
+      return parallelPlan;
+    }
+  } catch (error) {
+    console.warn(
+      "[Orchestra] Planskill failed, falling back to Gemini planning:",
+      error
+    );
+  }
+
+  // Fallback to Gemini planning
+  return await planWithGemini(userTask);
+}
+
+// Step 2: Parallel orchestrator function with enhanced capabilities
+export async function orchestrateParallel(
+  userTask,
+  sessionId = "default",
+  timeoutMs = PARALLEL_TIMEOUT,
+  options = {}
+) {
   const executionId = `exec_${Date.now()}_${Math.random()
     .toString(36)
     .slice(2)}`;
   console.log(
-    `[OrchestraAgent] Starting execution ${executionId} with task:`,
+    `[Orchestra] Starting parallel execution ${executionId} with task:`,
+    userTask
+  );
+
+  const results = {};
+  const startTime = Date.now();
+
+  try {
+    // Step 1: Get subtasks using enhanced planning
+    const subtasks = options.useDetailedPlanning
+      ? await createParallelPlan(userTask)
+      : await planWithGemini(userTask);
+
+    console.log(
+      `[Orchestra] Generated ${subtasks.length} parallel subtasks:`,
+      subtasks.map((s) => `${s.agent}: ${s.subtask.substring(0, 100)}...`)
+    );
+
+    // Step 2: Set up agent-to-agent communication channels
+    const communicationChannels = setupAgentCommunication(executionId);
+
+    // Step 3: Fire off all agent tasks in parallel and await their responses
+    const agentPromises = subtasks.map(({ agent, subtask, steps }) => {
+      const replyChannel = `orchestrator.${agent}.reply.${executionId}.${Math.random()
+        .toString(36)
+        .slice(2)}`;
+
+      // Promise that resolves when agent replies or rejects on timeout
+      const p = new Promise(async (resolve, reject) => {
+        const handler = (msg) => {
+          bus.unsubscribe(replyChannel, handler);
+          resolve(msg);
+        };
+
+        await bus.subscribe(replyChannel, handler);
+
+        const timeout = setTimeout(() => {
+          bus.unsubscribe(replyChannel, handler);
+          reject(new Error(`${agent} response timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
+
+        // Clean up timeout if resolved
+        p.finally(() => clearTimeout(timeout));
+      });
+
+      // Enhanced task data with agent communication capabilities
+      const taskData = {
+        userTask: subtask,
+        originalTask: userTask,
+        sessionId,
+        executionId,
+        replyChannel,
+        steps: steps || [],
+        communicationChannels: communicationChannels[agent],
+        agentContext: {
+          parallelExecution: true,
+          otherAgents: subtasks
+            .filter((s) => s.agent !== agent)
+            .map((s) => s.agent),
+          stepId: `${executionId}_${agent}`,
+          maxToolRetries: 2,
+          preventInfiniteLoops: true,
+        },
+      };
+
+      // Publish the subtask to the agent
+      bus.publish(
+        `agent.${agent}.task`,
+        `${agent.toUpperCase()}_TASK`,
+        taskData
+      );
+
+      // Save the result under the agent's name, handling errors
+      return p.then(
+        (result) => {
+          results[agent] = {
+            ...result,
+            status: "SUCCESS",
+            executionTime: Date.now() - startTime,
+            agent: agent,
+          };
+          console.log(`[Orchestra] Agent ${agent} completed successfully`);
+          return results[agent];
+        },
+        (err) => {
+          const errorResult = {
+            error: err.message,
+            status: "ERROR",
+            executionTime: Date.now() - startTime,
+            agent: agent,
+          };
+          results[agent] = errorResult;
+          console.error(`[Orchestra] Agent ${agent} failed:`, err.message);
+          return errorResult;
+        }
+      );
+    });
+
+    // Step 4: Wait for all agents to complete
+    await Promise.all(agentPromises);
+
+    // Step 5: Process and coordinate results
+    const coordinatedResults = await coordinateResults(
+      results,
+      userTask,
+      executionId
+    );
+
+    const executionTime = Date.now() - startTime;
+    const finalResult = {
+      executionId,
+      originalTask: userTask,
+      sessionId,
+      executionSummary: {
+        totalAgents: subtasks.length,
+        successfulAgents: Object.values(results).filter(
+          (r) => r.status === "SUCCESS"
+        ).length,
+        failedAgents: Object.values(results).filter((r) => r.status === "ERROR")
+          .length,
+        executionTime,
+        status: determineFinalStatus(results),
+      },
+      agentResults: results,
+      coordinatedOutput: coordinatedResults,
+      timestamp: new Date().toISOString(),
+    };
+
+    console.log(
+      `[Orchestra] Parallel execution ${executionId} completed in ${executionTime}ms`
+    );
+    return finalResult;
+  } catch (error) {
+    console.error(
+      `[Orchestra] Parallel execution ${executionId} failed:`,
+      error
+    );
+    throw error;
+  }
+}
+
+// Setup agent-to-agent communication channels
+function setupAgentCommunication(executionId) {
+  const channels = {
+    dev: {
+      toDebug: `comm.${executionId}.dev.to.debug`,
+      toOps: `comm.${executionId}.dev.to.ops`,
+      fromDebug: `comm.${executionId}.debug.to.dev`,
+      fromOps: `comm.${executionId}.ops.to.dev`,
+    },
+    debug: {
+      toDev: `comm.${executionId}.debug.to.dev`,
+      toOps: `comm.${executionId}.debug.to.ops`,
+      fromDev: `comm.${executionId}.dev.to.debug`,
+      fromOps: `comm.${executionId}.ops.to.debug`,
+    },
+    ops: {
+      toDev: `comm.${executionId}.ops.to.dev`,
+      toDebug: `comm.${executionId}.ops.to.debug`,
+      fromDev: `comm.${executionId}.dev.to.ops`,
+      fromDebug: `comm.${executionId}.debug.to.ops`,
+    },
+  };
+
+  // Set up cross-agent communication listeners
+  Object.keys(channels).forEach((fromAgent) => {
+    Object.keys(channels).forEach((toAgent) => {
+      if (fromAgent !== toAgent) {
+        const channel = `comm.${executionId}.${fromAgent}.to.${toAgent}`;
+        bus.subscribe(channel, (msg) => {
+          console.log(
+            `[Orchestra] Agent communication: ${fromAgent} -> ${toAgent}`,
+            msg
+          );
+        });
+      }
+    });
+  });
+
+  return channels;
+}
+
+// Coordinate and synthesize results from all agents
+async function coordinateResults(results, userTask, executionId) {
+  try {
+    const successfulResults = Object.entries(results)
+      .filter(([_, result]) => result.status === "SUCCESS")
+      .map(([agent, result]) => ({ agent, ...result }));
+
+    if (successfulResults.length === 0) {
+      return "All agents failed to complete their tasks.";
+    }
+
+    const coordinationPrompt = `
+You are coordinating the results from multiple specialized agents working on this task: "${userTask}"
+
+Agent Results:
+${successfulResults
+  .map(
+    (r) => `
+${r.agent.toUpperCase()} Agent Result:
+${JSON.stringify(r.result || r.data || r, null, 2)}
+`
+  )
+  .join("\n")}
+
+Please provide a coordinated summary that:
+1. Integrates all successful agent outputs
+2. Identifies any conflicts or gaps
+3. Provides actionable next steps
+4. Highlights key deliverables from each agent
+
+Keep the response concise but comprehensive.
+`;
+
+    const coordination = await llm.invoke(coordinationPrompt);
+    return coordination.content || coordination.toString();
+  } catch (error) {
+    console.error("[Orchestra] Result coordination failed:", error);
+    return "Result coordination failed, but individual agent results are available.";
+  }
+}
+
+// Determine final execution status
+function determineFinalStatus(results) {
+  const agents = Object.keys(results);
+  const successful = agents.filter(
+    (agent) => results[agent].status === "SUCCESS"
+  );
+  const failed = agents.filter((agent) => results[agent].status === "ERROR");
+
+  if (failed.length === 0) {
+    return "SUCCESS";
+  } else if (successful.length === 0) {
+    return "FAILED";
+  } else {
+    return "PARTIAL_SUCCESS";
+  }
+}
+
+// Legacy sequential orchestrator (preserved for compatibility)
+export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
+  const executionId = `seq_exec_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  console.log(
+    `[OrchestraAgent] Starting sequential execution ${executionId} with task:`,
     userTask
   );
 
@@ -96,11 +442,14 @@ export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
     }
 
     console.log(
-      `[OrchestraAgent] Execution ${executionId} completed successfully`
+      `[OrchestraAgent] Sequential execution ${executionId} completed successfully`
     );
     return orchestraResult;
   } catch (error) {
-    console.error(`[OrchestraAgent] Execution ${executionId} failed:`, error);
+    console.error(
+      `[OrchestraAgent] Sequential execution ${executionId} failed:`,
+      error
+    );
     if (pubSubOptions.publishResult) {
       await bus.publish(
         pubSubOptions.publishChannel || "agent.orchestra",
@@ -112,9 +461,7 @@ export async function runOrchestraAgent(userTask, pubSubOptions = {}) {
   }
 }
 
-/**
- * Execute the plan using proper Orchestra Agent orchestration with improved loop control
- */
+// All the original sequential execution functions preserved
 async function executeOrchestratedPlan(plan, userQuery, executionId) {
   const startTime = Date.now();
   const workflowState = {
@@ -124,18 +471,16 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
     currentStepIndex: 0,
     results: [],
     conversationHistory: [],
-    stepRetries: new Map(), // Track retries per step
+    stepRetries: new Map(),
     startTime,
-    plan, // Add plan to state for reference
+    plan,
   };
 
   console.log(
     `[Orchestra] Starting orchestrated execution ${executionId} of plan with ${plan.length} steps`
   );
 
-  // Execute steps sequentially with proper orchestration and timeout
   for (let i = 0; i < plan.length; i++) {
-    // Check total execution timeout
     if (Date.now() - startTime > MAX_EXECUTION_TIME) {
       console.error(
         `[Orchestra] Execution ${executionId} timed out after ${MAX_EXECUTION_TIME}ms`
@@ -146,7 +491,6 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
     const currentStep = plan[i];
     workflowState.currentStepIndex = i;
 
-    // Check if step was already completed (prevent infinite loops)
     if (workflowState.completedSteps.includes(currentStep.step)) {
       console.log(
         `[Orchestra] Step ${currentStep.step} already completed, skipping`
@@ -162,7 +506,6 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
     );
 
     try {
-      // Execute step with timeout and retry logic
       const stepResult = await executeStepWithRetry(
         currentStep,
         workflowState,
@@ -170,7 +513,6 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
         stepId
       );
 
-      // Mark step as completed and store result
       if (!workflowState.completedSteps.includes(currentStep.step)) {
         workflowState.completedSteps.push(currentStep.step);
         workflowState.results.push(stepResult);
@@ -205,7 +547,6 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
         timestamp: new Date().toISOString(),
       });
 
-      // Handle failure through orchestra coordination
       const shouldContinue = await handleStepFailure(
         error,
         currentStep,
@@ -224,7 +565,7 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
   }
 
   const executionTime = Date.now() - startTime;
-  const finalStatus = determineFinalStatus(workflowState, plan);
+  const finalStatus = determineFinalStatusSequential(workflowState, plan);
 
   console.log(
     `[Orchestra] Execution ${executionId} finished in ${executionTime}ms with status: ${finalStatus}`
@@ -247,9 +588,6 @@ async function executeOrchestratedPlan(plan, userQuery, executionId) {
   };
 }
 
-/**
- * Execute a single step with retry logic and timeout
- */
 async function executeStepWithRetry(
   currentStep,
   workflowState,
@@ -300,7 +638,6 @@ async function executeStepWithRetry(
       retryCount++;
       workflowState.stepRetries.set(currentStep.step, retryCount);
 
-      // Check for infinite loop patterns
       if (isInfiniteLoopError(error)) {
         console.error(
           `[Orchestra] Infinite loop detected in step ${currentStep.step}:`,
@@ -327,9 +664,6 @@ async function executeStepWithRetry(
   }
 }
 
-/**
- * Enhanced agent task execution with loop detection
- */
 async function executeAgentTaskWithLoopDetection(step, stepId, lastError) {
   const runner = agentMap[step.agent];
   if (!runner) {
@@ -342,10 +676,8 @@ async function executeAgentTaskWithLoopDetection(step, stepId, lastError) {
     }`
   );
 
-  // Add context to prevent loops and provide error information
   let enhancedSubtask = `[Step ${step.step}] ${step.subtask}`;
 
-  // If we had a previous error, add guidance to avoid it
   if (lastError && isToolFormattingError(lastError)) {
     enhancedSubtask += `\n\nIMPORTANT: Previous attempt failed due to tool formatting error. 
     Please ensure all tool calls use proper JSON format and avoid infinite retry loops.
@@ -356,7 +688,7 @@ async function executeAgentTaskWithLoopDetection(step, stepId, lastError) {
     publishResult: false,
     stepId,
     stepNumber: step.step,
-    maxToolRetries: 2, // Limit tool retries
+    maxToolRetries: 2,
     preventInfiniteLoops: true,
   });
 
@@ -369,10 +701,7 @@ async function executeAgentTaskWithLoopDetection(step, stepId, lastError) {
   };
 }
 
-/**
- * Determine final execution status
- */
-function determineFinalStatus(workflowState, plan) {
+function determineFinalStatusSequential(workflowState, plan) {
   if (workflowState.failedSteps.length === 0) {
     return "SUCCESS";
   } else if (workflowState.completedSteps.length === 0) {
@@ -384,9 +713,6 @@ function determineFinalStatus(workflowState, plan) {
   }
 }
 
-/**
- * Use Orchestra Agent prompt to coordinate step execution with all required parameters
- */
 async function coordinateStepExecution(currentStep, workflowState, userQuery) {
   try {
     const context = {
@@ -403,7 +729,6 @@ async function coordinateStepExecution(currentStep, workflowState, userQuery) {
       context
     );
 
-    // Prepare prompt input with all required parameters
     const promptInput = await orchestraAgentPrompt.format({
       user_task: userQuery,
       step_number: currentStep.step,
@@ -412,7 +737,7 @@ async function coordinateStepExecution(currentStep, workflowState, userQuery) {
       completed_steps: workflowState.completedSteps.join(", ") || "None",
       failed_steps:
         workflowState.failedSteps.map((f) => f.step).join(", ") || "None",
-      plan: JSON.stringify(workflowState.plan || [], null, 2), // Add the missing plan parameter
+      plan: JSON.stringify(workflowState.plan || [], null, 2),
       deliverables: currentStep.deliverables || "Complete the assigned task",
       context: JSON.stringify(context, null, 2),
       error_prevention: `
@@ -424,12 +749,10 @@ async function coordinateStepExecution(currentStep, workflowState, userQuery) {
     });
 
     const response = await llm.invoke(promptInput);
-
     console.log(
       `[Orchestra] Coordination response for step ${currentStep.step}:`,
       response
     );
-
     return response;
   } catch (error) {
     console.error("[Orchestra] Coordination failed:", error);
@@ -439,41 +762,6 @@ async function coordinateStepExecution(currentStep, workflowState, userQuery) {
   }
 }
 
-/**
- * Execute the actual agent task with unique identification (fallback method)
- */
-async function executeAgentTask(step, stepId) {
-  const runner = agentMap[step.agent];
-  if (!runner) {
-    throw new Error(`Unknown agent: ${step.agent}`);
-  }
-
-  console.log(
-    `[Orchestra] Delegating to ${step.agent.toUpperCase()} agent (${stepId}): ${
-      step.subtask
-    }`
-  );
-
-  // Add step context to prevent agent confusion
-  const enhancedSubtask = `[Step ${step.step}] ${step.subtask}`;
-  const result = await runner(enhancedSubtask, {
-    publishResult: false,
-    stepId,
-    stepNumber: step.step,
-  });
-
-  return {
-    stepId,
-    agent: step.agent,
-    subtask: step.subtask,
-    result,
-    timestamp: new Date().toISOString(),
-  };
-}
-
-/**
- * Process step result through orchestra coordination
- */
 async function processStepResult(
   orchestraResponse,
   agentResult,
@@ -488,7 +776,7 @@ async function processStepResult(
     agentResult: agentResult.result,
     orchestraCoordination:
       orchestraResponse.content ||
-      orchestraResponse.toString().substring(0, 500), // Handle response properly
+      orchestraResponse.toString().substring(0, 500),
     status: "SUCCESS",
     timestamp: new Date().toISOString(),
     stepId: agentResult.stepId,
@@ -498,45 +786,34 @@ async function processStepResult(
   return processed;
 }
 
-/**
- * Handle step failure through orchestra coordination with improved logic
- */
 async function handleStepFailure(error, step, workflowState, plan, userQuery) {
   console.log(
     `[Orchestra] Handling failure for step ${step.step}:`,
     error.message
   );
 
-  // Special handling for infinite loop errors
   if (isInfiniteLoopError(error)) {
     console.error(
       `[Orchestra] Infinite loop detected in step ${step.step}, this is critical`
     );
-    return false; // Always abort on infinite loops
+    return false;
   }
 
-  // Check if we have made any progress
   const hasProgress = workflowState.completedSteps.length > 0;
-
-  // Critical step detection
   const isCriticalStep =
     step.agent === "ops" ||
     step.subtask.toLowerCase().includes("critical") ||
     step.subtask.toLowerCase().includes("essential");
-
-  // Check remaining steps
   const remainingSteps = plan.length - workflowState.currentStepIndex - 1;
   const failureRate =
     workflowState.failedSteps.length / (workflowState.currentStepIndex + 1);
 
-  // Enhanced decision logic
   if (isCriticalStep && !hasProgress) {
     console.log("[Orchestra] Critical step failed with no progress, aborting");
     return false;
   }
 
   if (failureRate > 0.6) {
-    // More than 60% failure rate
     console.log("[Orchestra] High failure rate detected, aborting");
     return false;
   }
@@ -546,7 +823,6 @@ async function handleStepFailure(error, step, workflowState, plan, userQuery) {
     return false;
   }
 
-  // Check for repeated infinite loop errors
   const recentLoopErrors = workflowState.failedSteps
     .slice(-3)
     .filter((f) => isInfiniteLoopError(new Error(f.error)));
@@ -612,6 +888,69 @@ export function subscribeToOrchestraTasks(
         } catch (publishErr) {
           console.error(
             `[OrchestraAgent] Failed to publish error for ${requestId}:`,
+            publishErr
+          );
+        }
+      }
+    }
+  });
+}
+
+// Subscribe to parallel orchestra tasks
+export function subscribeToParallelOrchestraTasks() {
+  bus.subscribe("agent.orchestra.parallel", async (msg) => {
+    const requestId = `parallel_req_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2)}`;
+
+    try {
+      console.log(`[ParallelOrchestra] Processing message ${requestId}:`, msg);
+
+      const data = msg.data || msg;
+      if (!data || !data.userTask) {
+        console.error(
+          `[ParallelOrchestra] Invalid message format for ${requestId}:`,
+          msg
+        );
+        return;
+      }
+
+      const { userTask, sessionId, replyChannel, timeoutMs, options } = data;
+      console.log(
+        `[ParallelOrchestra] Received user task ${requestId}:`,
+        userTask
+      );
+
+      if (!replyChannel) {
+        console.error(
+          `[ParallelOrchestra] No reply channel provided for ${requestId}`
+        );
+        return;
+      }
+
+      const result = await orchestrateParallel(
+        userTask,
+        sessionId,
+        timeoutMs,
+        options
+      );
+
+      await bus.publish(replyChannel, "PARALLEL_ORCHESTRA_RESULT", result);
+
+      console.log(
+        `[ParallelOrchestra] Successfully published result for ${requestId}!`
+      );
+    } catch (err) {
+      console.error(`[ParallelOrchestra] Handler error for ${requestId}:`, err);
+      if (msg?.data?.replyChannel) {
+        try {
+          await bus.publish(msg.data.replyChannel, "PARALLEL_ORCHESTRA_ERROR", {
+            error: err.message || "Unknown error occurred",
+            requestId,
+          });
+        } catch (publishErr) {
+          console.error(
+            `[ParallelOrchestra] Failed to publish error for ${requestId}:`,
             publishErr
           );
         }
