@@ -19,8 +19,8 @@ const bus = new MessageBus("orchestra");
 // Use Gemini instead of Ollama
 const llm = new ChatGoogleGenerativeAI({
   apiKey: process.env.GOOGLE_API_KEY,
-  model: "models/gemini-2.0-flash",
-  temperature: 0.1,
+  model: "models/gemini-2.5-pro",
+  temperature: 0,
 });
 
 // Configuration constants

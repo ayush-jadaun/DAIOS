@@ -50,8 +50,8 @@ services:
   # ollama:
   #   image: ollama/ollama
   #   container_name: ollama
-  #   runtime: nvidia # <-- Add this line for GPU support
-  #   deploy:         # <-- Add device reservations for Compose v3+
+  #   runtime: nvidia 
+  #   deploy:         
   #     resources:
   #       reservations:
   #         devices:
@@ -65,8 +65,8 @@ services:
   #   restart: unless-stopped
   #   entrypoint: ["/bin/sh", "-c", "ollama pull llama3 || true; ollama serve"]
   #   environment:
-  #     - OLLAMA_NUM_GPU=1     # <-- Optional: tell Ollama to use GPU if multiple present
-  #     - NVIDIA_VISIBLE_DEVICES=all # <-- Optional, but helps explicit device use
+  #     - OLLAMA_NUM_GPU=1  t
+  #     - NVIDIA_VISIBLE_DEVICES=all
 
   api-server:
     build: .
@@ -81,7 +81,7 @@ services:
       - OLLAMA_URL=http://ollama:11434
       - TASK_PLANNER_URL=http://task-planner:8002
       - REDIS_URL=redis://redis:6379
-      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
+      - GITHUB_TOKEN=${GITHUB_TOKEN}   
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - redis
@@ -101,7 +101,7 @@ services:
       - TASK_PLANNER_URL=http://task-planner:8002
       - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
-      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
+      - GITHUB_TOKEN=${GITHUB_TOKEN}   
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - redis
@@ -114,8 +114,8 @@ services:
 
   dev-agent:
       build:
-        context: .        # path to the directory containing your Dockerfile
-        dockerfile: Dockerfile   # name of the Dockerfile inside ./dev
+        context: .       
+        dockerfile: Dockerfile  
       container_name: daios-dev-agent
       environment:
         - CHROMA_BRIDGE_URL=http://chroma-service:8001
@@ -139,7 +139,7 @@ services:
       - TASK_PLANNER_URL=http://task-planner:8002
       - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
-      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
+      - GITHUB_TOKEN=${GITHUB_TOKEN}  
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - redis
@@ -159,7 +159,7 @@ services:
       - TASK_PLANNER_URL=http://task-planner:8002
       - SERPER_API_KEY=${SERPER_API_KEY}
       - REDIS_URL=redis://redis:6379
-      - GITHUB_TOKEN=${GITHUB_TOKEN}   # <-- Add this line
+      - GITHUB_TOKEN=${GITHUB_TOKEN}  
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - redis
